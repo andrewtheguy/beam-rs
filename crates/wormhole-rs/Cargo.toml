@@ -26,7 +26,7 @@ nostr-sdk = { workspace = true }
 tempfile = { workspace = true }
 
 # iroh transport
-iroh = { version = "0.96.1", features = ["address-lookup-mdns"] }
+iroh = { version = "0.97.0", features = ["address-lookup-mdns"] }
 
 # Crate-specific dependencies
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -192,7 +192,7 @@ fn is_relay_or_network_error(e: &ConnectError) -> bool {
     match e {
         ConnectError::Connect { source, .. } => match source {
             ConnectWithOptsError::NoAddress { .. } => return true,
-            ConnectWithOptsError::Quinn { source, .. } => {
+            ConnectWithOptsError::Noq { source, .. } => {
                 // Quinn's ConnectError doesn't expose network-level issues directly
                 // Check if the error message indicates connection failure
                 let msg = source.to_string().to_lowercase();

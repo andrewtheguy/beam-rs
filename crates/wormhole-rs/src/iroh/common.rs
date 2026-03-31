@@ -131,11 +131,14 @@ fn format_paths(paths: &PathInfoList) -> String {
         .iter()
         .filter(|p| p.is_selected())
         .map(|path| {
-            let rtt = path.rtt();
+            let rtt_str = match path.rtt() {
+                Some(rtt) => format!(" (rtt {rtt:.0?})"),
+                None => String::new(),
+            };
             match path.remote_addr() {
-                TransportAddr::Ip(addr) => format!("Direct {addr} (rtt {rtt:.0?})"),
-                TransportAddr::Relay(url) => format!("Relay {url} (rtt {rtt:.0?})"),
-                other => format!("{other:?} (rtt {rtt:.0?})"),
+                TransportAddr::Ip(addr) => format!("Direct {addr}{rtt_str}"),
+                TransportAddr::Relay(url) => format!("Relay {url}{rtt_str}"),
+                other => format!("{other:?}{rtt_str}"),
             }
         })
         .collect();
@@ -223,7 +226,8 @@ pub async fn create_sender_endpoint(relay_urls: Vec<String>) -> Result<Endpoint>
     print_relay_info(&relay_urls);
     let relay_mode = parse_relay_mode(relay_urls)?;
 
-    let endpoint = Endpoint::empty_builder(relay_mode)
+    let endpoint = Endpoint::empty_builder()
+        .relay_mode(relay_mode)
         .alpns(vec![ALPN.to_vec()])
         .address_lookup(MdnsAddressLookup::builder())
         .bind()
@@ -245,7 +249,8 @@ pub async fn create_receiver_endpoint(relay_urls: Vec<String>) -> Result<Endpoin
     print_relay_info(&relay_urls);
     let relay_mode = parse_relay_mode(relay_urls)?;
 
-    let endpoint = Endpoint::empty_builder(relay_mode)
+    let endpoint = Endpoint::empty_builder()
+        .relay_mode(relay_mode)
         .address_lookup(MdnsAddressLookup::builder())
         .bind()
         .await
