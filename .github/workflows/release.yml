@@ -2,10 +2,6 @@ name: Release (Manual)
 
 on:
   workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Tag name (leave empty for auto-generated yyyymmddhhmmss)'
-        required: false
 
 permissions:
   contents: write
@@ -14,19 +10,33 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
-      release_tag: ${{ steps.tag.outputs.release_tag }}
-      is_prerelease: ${{ steps.tag.outputs.is_prerelease }}
+      release_tag: ${{ steps.version.outputs.new }}
+      is_prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - name: Generate Tag
-        id: tag
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
         run: |
-          if [ -z "${{ inputs.tag_name }}" ]; then
-            echo "release_tag=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_OUTPUT
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          version=$(python3 -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text())['workspace']['package']['version'])")
+          echo "new=$version" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
           else
-            echo "release_tag=${{ inputs.tag_name }}" >> $GITHUB_OUTPUT
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Abort if tag already exists
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.new }}" | grep -q .; then
+            echo "::error::Tag ${{ steps.version.outputs.new }} already exists on remote"
+            exit 1
+          fi
+
+      - name: Tag and push
+        run: |
+          git tag "${{ steps.version.outputs.new }}"
+          git push origin "${{ steps.version.outputs.new }}"
 
   build-linux:
     needs: setup
@@ -214,13 +224,13 @@ jobs:
       - name: List artifacts
         run: ls -la artifacts/
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.setup.outputs.release_tag }}
-          name: Release ${{ needs.setup.outputs.release_tag }}
-          prerelease: ${{ needs.setup.outputs.is_prerelease }}
-          generate_release_notes: true
-          files: artifacts/*
+      - name: Create GitHub release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "${{ needs.setup.outputs.release_tag }}" \
+            --title "Release ${{ needs.setup.outputs.release_tag }}" \
+            --generate-notes \
+            ${{ needs.setup.outputs.is_prerelease == 'true' && '--prerelease' || '' }} \
+            artifacts/*

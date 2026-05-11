@@ -5,11 +5,12 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use iroh::{
     Endpoint, EndpointAddr, RelayMap, RelayUrl, TransportAddr, Watcher,
     address_lookup::mdns::MdnsAddressLookup,
-    endpoint::{Connection, PathInfoList, RecvStream, RelayMode, SendStream},
+    endpoint::{Builder as EndpointBuilder, Connection, PathInfoList, RecvStream, RelayMode, SendStream},
 };
 use tokio::task::JoinHandle;
 use std::io;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use wormhole_common::core::wormhole::{
@@ -226,7 +227,13 @@ pub async fn create_sender_endpoint(relay_urls: Vec<String>) -> Result<Endpoint>
     print_relay_info(&relay_urls);
     let relay_mode = parse_relay_mode(relay_urls)?;
 
-    let endpoint = Endpoint::empty_builder()
+    // iroh 0.98 (PR #3992) requires the crypto provider to be set explicitly
+    // on the builder when starting from `EndpointBuilder::empty()` — the
+    // `tls-ring` feature only makes the ring backend available, it does not
+    // wire it in, and rustls' global `install_default()` is not consulted.
+    let crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
+    let endpoint = EndpointBuilder::empty()
+        .crypto_provider(crypto_provider)
         .relay_mode(relay_mode)
         .alpns(vec![ALPN.to_vec()])
         .address_lookup(MdnsAddressLookup::builder())
@@ -249,7 +256,13 @@ pub async fn create_receiver_endpoint(relay_urls: Vec<String>) -> Result<Endpoin
     print_relay_info(&relay_urls);
     let relay_mode = parse_relay_mode(relay_urls)?;
 
-    let endpoint = Endpoint::empty_builder()
+    // iroh 0.98 (PR #3992) requires the crypto provider to be set explicitly
+    // on the builder when starting from `EndpointBuilder::empty()` — the
+    // `tls-ring` feature only makes the ring backend available, it does not
+    // wire it in, and rustls' global `install_default()` is not consulted.
+    let crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
+    let endpoint = EndpointBuilder::empty()
+        .crypto_provider(crypto_provider)
         .relay_mode(relay_mode)
         .address_lookup(MdnsAddressLookup::builder())
         .bind()
