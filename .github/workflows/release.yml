@@ -111,7 +111,7 @@ jobs:
           name: release-tor-${{ matrix.suffix }}
           path: target/release/beam-rs-tor-${{ matrix.suffix }}
 
-  build-other:
+  build-macos:
     needs: setup
     strategy:
       matrix:
@@ -119,11 +119,6 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             suffix: macos-arm64
-            binary: beam-rs
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            suffix: windows-amd64
-            binary: beam-rs.exe
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -136,96 +131,107 @@ jobs:
       - name: Build Release
         run: cargo build --release --all-features --target ${{ matrix.target }}
 
-      - name: Rename Binary (Unix)
-        if: runner.os != 'Windows'
-        run: mv target/${{ matrix.target }}/release/${{ matrix.binary }} target/release/beam-rs-${{ matrix.suffix }}
+      - name: Rename Binary
+        run: mv target/${{ matrix.target }}/release/beam-rs target/release/beam-rs-${{ matrix.suffix }}
 
-      - name: Rename Binary (Windows)
-        if: runner.os == 'Windows'
-        run: move target\${{ matrix.target }}\release\${{ matrix.binary }} target\release\beam-rs-${{ matrix.suffix }}.exe
-
-      - name: Upload release artifact (Unix)
-        if: runner.os != 'Windows'
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.suffix }}
           path: target/release/beam-rs-${{ matrix.suffix }}
 
-      - name: Upload release artifact (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-${{ matrix.suffix }}
-          path: target/release/beam-rs-${{ matrix.suffix }}.exe
-
-      - name: Rename WebRTC Binary (Unix)
-        if: runner.os != 'Windows'
+      - name: Rename WebRTC Binary
         run: mv target/${{ matrix.target }}/release/beam-rs-webrtc target/release/beam-rs-webrtc-${{ matrix.suffix }}
 
-      - name: Rename WebRTC Binary (Windows)
-        if: runner.os == 'Windows'
-        run: move target\${{ matrix.target }}\release\beam-rs-webrtc.exe target\release\beam-rs-webrtc-${{ matrix.suffix }}.exe
-
-      - name: Upload WebRTC release artifact (Unix)
-        if: runner.os != 'Windows'
+      - name: Upload WebRTC release artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-webrtc-${{ matrix.suffix }}
           path: target/release/beam-rs-webrtc-${{ matrix.suffix }}
 
-      - name: Upload WebRTC release artifact (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-webrtc-${{ matrix.suffix }}
-          path: target/release/beam-rs-webrtc-${{ matrix.suffix }}.exe
-
-      - name: Rename Local Binary (Unix)
-        if: runner.os != 'Windows'
+      - name: Rename Local Binary
         run: mv target/${{ matrix.target }}/release/beam-rs-local target/release/beam-rs-local-${{ matrix.suffix }}
 
-      - name: Rename Local Binary (Windows)
-        if: runner.os == 'Windows'
-        run: move target\${{ matrix.target }}\release\beam-rs-local.exe target\release\beam-rs-local-${{ matrix.suffix }}.exe
-
-      - name: Upload Local release artifact (Unix)
-        if: runner.os != 'Windows'
+      - name: Upload Local release artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-local-${{ matrix.suffix }}
           path: target/release/beam-rs-local-${{ matrix.suffix }}
 
-      - name: Upload Local release artifact (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-local-${{ matrix.suffix }}
-          path: target/release/beam-rs-local-${{ matrix.suffix }}.exe
-
-      - name: Rename Tor Binary (Unix)
-        if: runner.os != 'Windows'
+      - name: Rename Tor Binary
         run: mv target/${{ matrix.target }}/release/beam-rs-tor target/release/beam-rs-tor-${{ matrix.suffix }}
 
-      - name: Rename Tor Binary (Windows)
-        if: runner.os == 'Windows'
-        run: move target\${{ matrix.target }}\release\beam-rs-tor.exe target\release\beam-rs-tor-${{ matrix.suffix }}.exe
-
-      - name: Upload Tor release artifact (Unix)
-        if: runner.os != 'Windows'
+      - name: Upload Tor release artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-tor-${{ matrix.suffix }}
           path: target/release/beam-rs-tor-${{ matrix.suffix }}
 
-      - name: Upload Tor release artifact (Windows)
-        if: runner.os == 'Windows'
+  build-windows:
+    needs: setup
+    # Windows binaries are only built for stable (non-prerelease) releases.
+    if: needs.setup.outputs.is_prerelease == 'false'
+    runs-on: windows-latest
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      SUFFIX: windows-amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Release
+        run: cargo build --release --all-features --target ${{ env.TARGET }}
+
+      - name: Rename Binary
+        run: move target\${{ env.TARGET }}\release\beam-rs.exe target\release\beam-rs-${{ env.SUFFIX }}.exe
+
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-tor-${{ matrix.suffix }}
-          path: target/release/beam-rs-tor-${{ matrix.suffix }}.exe
+          name: release-${{ env.SUFFIX }}
+          path: target/release/beam-rs-${{ env.SUFFIX }}.exe
+
+      - name: Rename WebRTC Binary
+        run: move target\${{ env.TARGET }}\release\beam-rs-webrtc.exe target\release\beam-rs-webrtc-${{ env.SUFFIX }}.exe
+
+      - name: Upload WebRTC release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-webrtc-${{ env.SUFFIX }}
+          path: target/release/beam-rs-webrtc-${{ env.SUFFIX }}.exe
+
+      - name: Rename Local Binary
+        run: move target\${{ env.TARGET }}\release\beam-rs-local.exe target\release\beam-rs-local-${{ env.SUFFIX }}.exe
+
+      - name: Upload Local release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-local-${{ env.SUFFIX }}
+          path: target/release/beam-rs-local-${{ env.SUFFIX }}.exe
+
+      - name: Rename Tor Binary
+        run: move target\${{ env.TARGET }}\release\beam-rs-tor.exe target\release\beam-rs-tor-${{ env.SUFFIX }}.exe
+
+      - name: Upload Tor release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-tor-${{ env.SUFFIX }}
+          path: target/release/beam-rs-tor-${{ env.SUFFIX }}.exe
 
   create-release:
-    needs: [setup, build-linux, build-other]
+    needs: [setup, build-linux, build-macos, build-windows]
+    # build-windows is skipped for prereleases; tolerate that while still
+    # requiring the other build jobs to have succeeded.
+    if: >-
+      always()
+      && needs.setup.result == 'success'
+      && needs.build-linux.result == 'success'
+      && needs.build-macos.result == 'success'
+      && (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Download all release artifacts
