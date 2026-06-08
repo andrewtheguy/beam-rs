@@ -6,7 +6,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 **Scenario**: You need to transfer files without using the public internet: either both machines are on the same LAN, or they can still reach each other over a private/routed network while you copy/paste signaling text out-of-band.
 
 **Solution A**: **Local-only Mode** (`beam-rs send --local-only`)
-- **Why**: Same iroh transport as the default mode, but with relays disabled. The peer is discovered over mDNS and connected to directly, so no data leaves your local network and no relay/internet is contacted.
+- **Why**: Same iroh transport as the default mode, but with relays disabled. The sender's LAN addresses are embedded in the beam code so the receiver connects directly (with mDNS as a fallback), so no data leaves your local network and no relay/internet is contacted.
 - **Command**:
   ```bash
   # Sender
@@ -66,7 +66,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   2. Receiver runs `beam-rs receive --pin` and types `A1b2C3d4E5f6`.
 
 **Solution B**: **Local-only Mode** (Same network, no internet)
-- **Why**: Stays entirely on the LAN (relays disabled, mDNS discovery). Note this still requires moving the beam code between devices — handy when you can scan/share the code but want zero internet involvement.
+- **Why**: Stays entirely on the LAN (relays disabled; the sender's LAN addresses are embedded in the beam code, with mDNS as a fallback). Note this still requires moving the beam code between devices — handy when you can scan/share the code but want zero internet involvement.
 - **Command**:
   ```bash
   # Sender
@@ -132,7 +132,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   ```
 
 **Solution B**: **Local-only Mode** (Same network)
-- **Why**: Uses mDNS discovery with relays disabled and no external dependencies. Works completely offline.
+- **Why**: Embeds the sender's LAN addresses in the beam code (mDNS as a fallback) with relays disabled and no external dependencies. Works completely offline.
 - **Command**:
   ```bash
   beam-rs send --local-only /path/to/file

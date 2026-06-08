@@ -222,12 +222,12 @@ fn print_relay_info(relay_urls: &[String]) {
 /// The endpoint is configured with ALPN for beam transfers.
 /// Multiple relay URLs provide automatic failover based on latency.
 ///
-/// When `local_only` is set, relays are disabled entirely and the endpoint
-/// relies purely on mDNS-discovered direct addresses — no internet or relay
-/// server is contacted.
+/// When `local_only` is set, relays are disabled entirely and the endpoint's
+/// own LAN addresses are embedded in the beam code (with mDNS kept as a
+/// fallback) — no internet or relay server is contacted.
 pub async fn create_sender_endpoint(relay_urls: Vec<String>, local_only: bool) -> Result<Endpoint> {
     let relay_mode = if local_only {
-        eprintln!("Local-only mode (mDNS, no relay)");
+        eprintln!("Local-only mode (LAN direct, no relay)");
         RelayMode::Disabled
     } else {
         print_relay_info(&relay_urls);
@@ -296,14 +296,14 @@ async fn wait_for_direct_address(endpoint: &Endpoint) {
 /// Multiple relay URLs provide automatic failover based on latency.
 ///
 /// When `local_only` is set, relays are disabled entirely and the sender is
-/// reached purely via mDNS-resolved direct addresses — no internet or relay
-/// server is contacted.
+/// reached via the LAN addresses embedded in the beam code (with mDNS as a
+/// fallback) — no internet or relay server is contacted.
 pub async fn create_receiver_endpoint(
     relay_urls: Vec<String>,
     local_only: bool,
 ) -> Result<Endpoint> {
     let relay_mode = if local_only {
-        eprintln!("Local-only mode (mDNS, no relay)");
+        eprintln!("Local-only mode (LAN direct, no relay)");
         RelayMode::Disabled
     } else {
         print_relay_info(&relay_urls);
@@ -326,13 +326,24 @@ pub async fn create_receiver_endpoint(
     Ok(endpoint)
 }
 
-/// Create a MinimalAddr from a full EndpointAddr, stripping IP addresses.
+/// Create a MinimalAddr from a full EndpointAddr.
+///
 /// Only the first (currently-selected) relay URL is kept to minimize token size.
-pub fn minimal_addr_from_endpoint(addr: &EndpointAddr) -> MinimalAddr {
+/// IP addresses are normally stripped (they're discovered at connect time via
+/// relay or mDNS), but when `include_ip_addrs` is set — local-only mode — the
+/// endpoint's direct LAN addresses are embedded so the receiver can connect
+/// without relying on mDNS resolution.
+pub fn minimal_addr_from_endpoint(addr: &EndpointAddr, include_ip_addrs: bool) -> MinimalAddr {
     let relay = addr.relay_urls().next().map(|r| r.to_string());
+    let ip_addrs = if include_ip_addrs {
+        addr.ip_addrs().map(|a| a.to_string()).collect()
+    } else {
+        Vec::new()
+    };
     MinimalAddr {
         id: addr.id.to_string(),
         relay,
+        ip_addrs,
     }
 }
 
@@ -349,13 +360,22 @@ pub fn minimal_addr_to_endpoint(addr: &MinimalAddr) -> Result<EndpointAddr> {
             .context("Failed to parse relay URL from beam code")?;
         endpoint_addr = endpoint_addr.with_relay_url(relay_url);
     }
+    for ip_str in &addr.ip_addrs {
+        let socket_addr = ip_str
+            .parse()
+            .with_context(|| format!("Failed to parse IP address from beam code: {ip_str}"))?;
+        endpoint_addr = endpoint_addr.with_ip_addr(socket_addr);
+    }
     Ok(endpoint_addr)
 }
 
 /// Generate a beam code from endpoint address
 /// Format: base64url(json(BeamToken))
-pub fn generate_code(addr: &EndpointAddr, key: &[u8; 32]) -> Result<String> {
-    let minimal_addr = minimal_addr_from_endpoint(addr);
+///
+/// In `local_only` mode the endpoint's direct LAN addresses are embedded in the
+/// code so the receiver can connect without depending on mDNS resolution.
+pub fn generate_code(addr: &EndpointAddr, key: &[u8; 32], local_only: bool) -> Result<String> {
+    let minimal_addr = minimal_addr_from_endpoint(addr, local_only);
 
     let token = BeamToken {
         version: CURRENT_VERSION,

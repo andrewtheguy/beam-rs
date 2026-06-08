@@ -67,6 +67,14 @@ pub struct MinimalAddr {
     /// to minimize token size for copy/paste usability)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay: Option<String>,
+    /// Direct socket addresses (host:port) for the endpoint.
+    ///
+    /// Normally empty — direct addresses are discovered at connect time via the
+    /// relay or mDNS. In local-only mode there is no relay and mDNS resolution
+    /// can be unreliable across platforms (notably macOS), so the sender embeds
+    /// its LAN addresses here to let the receiver connect directly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ip_addrs: Vec<String>,
 }
 
 
