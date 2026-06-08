@@ -26,6 +26,7 @@ pub async fn receive(
     relay_urls: Vec<String>,
     no_resume: bool,
     pin_info: Option<PinInfo>,
+    local_only: bool,
 ) -> Result<()> {
     eprintln!("Parsing beam code...");
 
@@ -42,7 +43,7 @@ pub async fn receive(
     eprintln!("Code valid. Connecting to sender...");
 
     // Create iroh endpoint
-    let endpoint = create_receiver_endpoint(relay_urls).await?;
+    let endpoint = create_receiver_endpoint(relay_urls, local_only).await?;
 
     // Connect to sender
     let conn = endpoint.connect(addr, ALPN).await.map_err(|e| {

@@ -10,8 +10,8 @@ beam-rs supports two main categories of transport:
     - **iroh Mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`
     - **Tor Mode**: Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs-tor send`
     - **WebRTC Mode**: Direct P2P via WebRTC DataChannels with Nostr signaling via `beam-rs-webrtc send`
-2. **Local Transfers** (using `beam-rs-local send`):
-    - **mDNS Mode**: LAN-only transfers using mDNS discovery + TCP with SPAKE2 key exchange driven by a 12-character PIN
+2. **Local Transfers** (using `beam-rs send --local-only`):
+    - **Local-only Mode**: LAN-only transfers using the iroh QUIC/TLS stack with relays disabled; the peer is discovered over mDNS and connected to directly. Uses the same beam code as iroh mode.
 
 ## Transfer Flows
 
@@ -151,9 +151,14 @@ sequenceDiagram
 
 ### 2. Local Transfers (LAN)
 
-#### Local Mode (mDNS + TCP)
+#### Local-only Mode (iroh with relays disabled)
 
-Local mode is designed for transfers on the same LAN without internet access. It uses a SPAKE2 PAKE to derive the session key from a short PIN, preventing offline dictionary attacks.
+Local-only mode is designed for transfers on the same LAN without internet
+access. It is the **same** iroh transport and beam code as the default mode,
+with one difference: relays are disabled (`RelayMode::Disabled`), so the peer is
+discovered purely via iroh's mDNS address lookup and connected to directly over
+QUIC. The receiver auto-detects this mode from a beam code that carries an
+endpoint address with no relay URL.
 
 ```mermaid
 sequenceDiagram
@@ -161,34 +166,19 @@ sequenceDiagram
     participant mDNS
     participant Receiver
 
-    Sender->>Sender: 1. Generate 12-char PIN (with checksum)
-    Sender->>Sender: 2. Start TCP Listener (Random Port)
-    
-    Sender->>mDNS: 3. Advertise Service (_beam._tcp)
-    Note over mDNS: TXT: transfer_id, filename, size, type
+    Sender->>Sender: 1. Bind iroh endpoint (RelayMode::Disabled)
+    Sender->>mDNS: 2. Advertise endpoint + direct addrs (mDNS address lookup)
+    Sender->>Sender: 3. Wait for a direct address, then print beam code
+    Note over Sender: Beam code has endpoint id, no relay URL
 
-    Note over Sender: User shares PIN out-of-band
+    Note over Sender: User shares beam code out-of-band
 
-    Receiver->>mDNS: 4. Discover Service
-    Receiver->>Sender: 5. Connect TCP
-    Receiver->>Sender: 6. SPAKE2 handshake with PIN + transfer_id -> shared key
-    Note over Sender,Receiver: Prevents offline brute-force of PIN
+    Receiver->>Receiver: 4. Parse code, detect no relay -> local-only
+    Receiver->>mDNS: 5. Resolve endpoint id -> direct addrs
+    Receiver->>Sender: 6. Connect directly over QUIC (ALPN beam-transfer/1)
 
-    Sender->>Receiver: 7. Send Encrypted Header (AES-256-GCM)
-    Note over Receiver: Check file existence, prompt user
-
-    alt User accepts transfer
-        Receiver->>Sender: 8. Send Encrypted PROCEED
-    else User declines or file conflict
-        Receiver->>Sender: 8. Send Encrypted ABORT
-        Note over Sender,Receiver: Transfer cancelled
-    end
-
-    loop 16KB chunks
-        Sender->>Receiver: Send Encrypted Chunk
-    end
-
-    Receiver->>Sender: 9. Send Encrypted ACK
+    Note over Sender,Receiver: From here identical to iroh mode
+    Sender->>Receiver: 7. Encrypted header / chunks / ACK (AES-256-GCM)
 ```
 
 ## Connection Types/Modes
@@ -202,12 +192,12 @@ sequenceDiagram
 - **Protocol**: ALPN `beam-transfer/1`.
 - **Encryption**: Always AES-256-GCM encrypted at the application layer, plus QUIC/TLS encryption.
 
-### Local Mode (`beam-rs-local send`)
-- **Transport**: Raw TCP
-- **Discovery**: mDNS (Multicast DNS)
-- **Key Exchange**: SPAKE2 using a 12-character PIN + transfer_id (prevents offline dictionary attacks)
-- **Encryption**: Mandatory AES-256-GCM using SPAKE2-derived key
-- **Port**: Random ephemeral port
+### Local-only Mode (`beam-rs send --local-only`)
+- **Transport**: QUIC / TLS 1.3 (same as iroh mode)
+- **Discovery**: iroh mDNS address lookup only; relays disabled (`RelayMode::Disabled`)
+- **Key Exchange**: Beam code (carries the AES key and an endpoint address with no relay URL)
+- **Encryption**: Always AES-256-GCM at the application layer, plus QUIC/TLS encryption
+- **Reachability**: The sender waits for at least one direct address before printing the code (it cannot wait for a relay, since relays are disabled). Incompatible with `--pin` and `--relay-url`.
 
 ### Tor Mode (`beam-rs-tor send`)
 - **Transport**: Tor Onion Services
@@ -245,14 +235,12 @@ WebRTC mode uses two encryption layers for defense in depth:
 - AES-256-GCM encryption for all data: headers, chunks, and control signals
 - Per-transfer random key embedded in the beam code
 
-### PIN-based Key Exchange (Local Mode)
+### PIN-based Key Exchange (PIN Mode)
+PIN mode (`beam-rs send --pin`) exchanges the beam code through Nostr keyed by a short PIN, then runs a SPAKE2 handshake over the iroh stream to derive the session key. It requires internet (Nostr) and is therefore not available with `--local-only`.
 - **Format**: 12 characters (11 random + 1 checksum) from an unambiguous charset; the checksum catches typos before attempting a connection.
-- **Key Derivation**: The PIN is fed into SPAKE2 (with transfer_id as context) to derive the session key; no salts are advertised in mDNS TXT records.
+- **Key Derivation**: The PIN is fed into SPAKE2 (with transfer_id as context) to derive the session key.
 - **Security**: SPAKE2 prevents offline dictionary attacks and rejects wrong transfer_id.
-
-### Local Mode Encryption
-- **Key Exchange**: SPAKE2 PAKE using the user-shared PIN and transfer_id.
-- **Confidentiality**: All data (headers, chunks, and control signals) over TCP is AES-256-GCM encrypted with the SPAKE2-derived key.
+- **Confidentiality**: All data (headers, chunks, and control signals) is AES-256-GCM encrypted with the SPAKE2-derived key, on top of the QUIC/TLS transport.
 
 ### Tor Mode Security
 - **Anonymity**: Sender/Receiver IPs hidden.
@@ -268,14 +256,8 @@ All beam codes and signaling offers include a creation timestamp and are validat
 - **Clock Skew**: Allows up to 60 seconds into the future to handle minor clock drift
 
 **Validation Points:**
-1. **Beam Codes** (iroh/tor/webrtc via Nostr): Validated in `parse_code()` before connection
+1. **Beam Codes** (iroh, iroh `--local-only`, tor, webrtc via Nostr): Validated in `parse_code()` before connection. Local-only codes use the same v4 token format and are validated the same way.
 2. **Manual Signaling Offers** (`send-manual`/`receive-manual` WebRTC): Validated in `read_offer_json()` before WebRTC handshake
-
-**Not used for mDNS (Local Mode):**
-TTL validation is not applied to local mDNS transfers because it is unnecessary:
-- The mDNS service advertisement is ephemeral and disappears when the sender exits
-- There is no persistent code/token that could be stored and replayed later
-- The connection happens immediately over direct TCP on the LAN
 
 **Error Messages:**
 - Expired codes: "Token expired: code is X minutes old (max 60 minutes). Please request a new code from the sender."
@@ -285,7 +267,7 @@ TTL validation is not applied to local mDNS transfers because it is unnecessary:
 
 ### Encrypted Message Format (Stream-based transports)
 
-All encrypted messages (used by Iroh, Tor, and mDNS modes) follow this format:
+All encrypted messages (used by Iroh, iroh `--local-only`, and Tor modes) follow this format:
 
 ```
 [length: 4 bytes BE][encrypted_payload]

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::StreamExt;
 use iroh::{
-    Endpoint, EndpointAddr, RelayMap, RelayUrl, TransportAddr,
+    Endpoint, EndpointAddr, RelayMap, RelayUrl, TransportAddr, Watcher,
     endpoint::{Connection, PathList, RecvStream, RelayMode, SendStream, presets},
 };
 use iroh_mdns_address_lookup::MdnsAddressLookup;
@@ -13,6 +13,7 @@ use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use beam_common::core::beam::{
     CURRENT_VERSION, MinimalAddr, PROTOCOL_IROH, BeamToken,
@@ -220,9 +221,18 @@ fn print_relay_info(relay_urls: &[String]) {
 /// Sets up local mDNS discovery.
 /// The endpoint is configured with ALPN for beam transfers.
 /// Multiple relay URLs provide automatic failover based on latency.
-pub async fn create_sender_endpoint(relay_urls: Vec<String>) -> Result<Endpoint> {
-    print_relay_info(&relay_urls);
-    let relay_mode = parse_relay_mode(relay_urls)?;
+///
+/// When `local_only` is set, relays are disabled entirely and the endpoint
+/// relies purely on mDNS-discovered direct addresses — no internet or relay
+/// server is contacted.
+pub async fn create_sender_endpoint(relay_urls: Vec<String>, local_only: bool) -> Result<Endpoint> {
+    let relay_mode = if local_only {
+        eprintln!("Local-only mode (mDNS, no relay)");
+        RelayMode::Disabled
+    } else {
+        print_relay_info(&relay_urls);
+        parse_relay_mode(relay_urls)?
+    };
 
     // iroh 1.0 requires the crypto provider to be set explicitly on the
     // builder when starting from the `Empty` preset — the `tls-ring` feature
@@ -238,10 +248,45 @@ pub async fn create_sender_endpoint(relay_urls: Vec<String>) -> Result<Endpoint>
         .await
         .context("Failed to create endpoint")?;
 
-    // Wait for endpoint to be online (connected to relay)
-    endpoint.online().await;
+    if local_only {
+        // `online()` waits for a home relay to connect, which never happens
+        // with relays disabled. Instead wait until we have at least one direct
+        // address so the printed beam code is reachable on the LAN.
+        wait_for_direct_address(&endpoint).await;
+    } else {
+        // Wait for endpoint to be online (connected to relay)
+        endpoint.online().await;
+    }
 
     Ok(endpoint)
+}
+
+/// Wait until the endpoint has discovered at least one direct (IP) address.
+///
+/// Used in local-only mode where there is no relay to fall back on. Gives up
+/// after a short timeout, in which case the receiver may simply need a moment
+/// longer for mDNS to propagate.
+async fn wait_for_direct_address(endpoint: &Endpoint) {
+    const ADDR_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+    let wait = async {
+        let mut watcher = endpoint.watch_addr();
+        loop {
+            if watcher.get().ip_addrs().next().is_some() {
+                break;
+            }
+            // Returns Err once the endpoint is dropped; stop waiting then.
+            if watcher.updated().await.is_err() {
+                break;
+            }
+        }
+    };
+    if tokio::time::timeout(ADDR_WAIT_TIMEOUT, wait).await.is_err() {
+        eprintln!(
+            "Warning: no local network address discovered within {:?}; \
+             the receiver may need a moment to find this sender.",
+            ADDR_WAIT_TIMEOUT
+        );
+    }
 }
 
 /// Create an iroh endpoint configured for receiving (connects to sender).
@@ -249,9 +294,21 @@ pub async fn create_sender_endpoint(relay_urls: Vec<String>) -> Result<Endpoint>
 /// Sets up local mDNS discovery.
 /// Does not set ALPN as the receiver specifies it when connecting.
 /// Multiple relay URLs provide automatic failover based on latency.
-pub async fn create_receiver_endpoint(relay_urls: Vec<String>) -> Result<Endpoint> {
-    print_relay_info(&relay_urls);
-    let relay_mode = parse_relay_mode(relay_urls)?;
+///
+/// When `local_only` is set, relays are disabled entirely and the sender is
+/// reached purely via mDNS-resolved direct addresses — no internet or relay
+/// server is contacted.
+pub async fn create_receiver_endpoint(
+    relay_urls: Vec<String>,
+    local_only: bool,
+) -> Result<Endpoint> {
+    let relay_mode = if local_only {
+        eprintln!("Local-only mode (mDNS, no relay)");
+        RelayMode::Disabled
+    } else {
+        print_relay_info(&relay_urls);
+        parse_relay_mode(relay_urls)?
+    };
 
     // iroh 1.0 requires the crypto provider to be set explicitly on the
     // builder when starting from the `Empty` preset — the `tls-ring` feature

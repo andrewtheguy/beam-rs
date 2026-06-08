@@ -5,17 +5,17 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 ## 1. No Internet Access (LAN / Air-gapped)
 **Scenario**: You need to transfer files without using the public internet: either both machines are on the same LAN, or they can still reach each other over a private/routed network while you copy/paste signaling text out-of-band.
 
-**Solution A**: **Local Mode** (`beam-rs-local`)
-- **Why**: Uses mDNS discovery and direct TCP. No data leaves your local network. Relies on a short 12‑character PIN instead of a long code.
+**Solution A**: **Local-only Mode** (`beam-rs send --local-only`)
+- **Why**: Same iroh transport as the default mode, but with relays disabled. The peer is discovered over mDNS and connected to directly, so no data leaves your local network and no relay/internet is contacted.
 - **Command**:
   ```bash
   # Sender
-  beam-rs-local send /path/to/file
+  beam-rs send --local-only /path/to/file
 
-  # Receiver
-  beam-rs-local receive
+  # Receiver (paste the printed beam code; local-only is auto-detected)
+  beam-rs receive --code <BEAM_CODE>
   ```
-- **Experience**: The sender is shown a random 12‑character PIN. The receiver finds the sender automatically and is prompted for that PIN.
+- **Experience**: The sender prints a beam code once it has a local address. Share the code out-of-band; the receiver auto-detects local-only mode from the code (no relay URL) and connects directly.
 
 **Solution B**: **WebRTC Manual Mode** (`beam-rs-webrtc send-manual` / `receive-manual`)  
 - **Why**: Works when mDNS is blocked and peers still have direct IP reachability (same LAN or routed private/VPN network). No Nostr relay required.
@@ -51,22 +51,8 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 ## 3. Cannot Copy-Paste (Cross-device / Remote Terminal)
 **Scenario**: You are sending a file from a laptop to a friend's phone, or to a remote server console where you cannot easily copy and paste the long "Beam Code". Typing a huge base64 string is impossible.
 
-**Solution A**: **Local Mode** (Recommended for same network)
-- **Why**: Uses a short 12-character PIN with mDNS discovery. No code copying needed.
-- **Command**:
-  ```bash
-  # Sender
-  beam-rs-local send /path/to/file
-
-  # Receiver
-  beam-rs-local receive
-  ```
-- **Experience**:
-  1. Sender sees: `PIN: A1b2C3d4E5f6` (example)
-  2. Receiver runs `beam-rs-local receive` and types `A1b2C3d4E5f6`.
-
-**Solution B**: **PIN Mode** (For internet transfers)
-- **Why**: Uses a short 12-character PIN instead of a long code. The PIN is exchanged via Nostr relays, while the actual file transfer uses iroh transport.
+**Solution A**: **PIN Mode** (Recommended when copy-paste is hard)
+- **Why**: Uses a short 12-character PIN instead of a long code. The PIN is exchanged via Nostr relays, while the actual file transfer uses iroh transport. Requires internet for the Nostr exchange.
 - **Command**:
   ```bash
   # Sender (iroh transport with PIN exchange)
@@ -74,6 +60,20 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 
   # Receiver (unified command, prompts for PIN)
   beam-rs receive --pin
+  ```
+- **Experience**:
+  1. Sender sees: `PIN: A1b2C3d4E5f6` (example)
+  2. Receiver runs `beam-rs receive --pin` and types `A1b2C3d4E5f6`.
+
+**Solution B**: **Local-only Mode** (Same network, no internet)
+- **Why**: Stays entirely on the LAN (relays disabled, mDNS discovery). Note this still requires moving the beam code between devices — handy when you can scan/share the code but want zero internet involvement.
+- **Command**:
+  ```bash
+  # Sender
+  beam-rs send --local-only /path/to/file
+
+  # Receiver (paste the printed beam code)
+  beam-rs receive --code <BEAM_CODE>
   ```
 
 ---
@@ -131,11 +131,11 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   beam-rs send --relay-url https://my-private-relay.com /path/to/file
   ```
 
-**Solution B**: **Local Mode** (Same network)
-- **Why**: Uses mDNS discovery with no external dependencies. Works completely offline.
+**Solution B**: **Local-only Mode** (Same network)
+- **Why**: Uses mDNS discovery with relays disabled and no external dependencies. Works completely offline.
 - **Command**:
   ```bash
-  beam-rs-local send /path/to/file
+  beam-rs send --local-only /path/to/file
   ```
 
 ---

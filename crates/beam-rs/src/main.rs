@@ -40,6 +40,11 @@ enum Commands {
         /// Custom relay server URLs (for iroh transport)
         #[arg(long)]
         relay_url: Vec<String>,
+
+        /// Same-LAN transfer only: disable relays and the internet, discover
+        /// the peer purely via mDNS. Incompatible with --pin and --relay-url.
+        #[arg(long)]
+        local_only: bool,
     },
 
     /// Receive a file or folder using a code
@@ -153,12 +158,25 @@ async fn async_main() -> Result<()> {
             folder,
             pin,
             relay_url,
+            local_only,
         } => {
             validate_path(&path, folder)?;
+            if local_only && pin {
+                anyhow::bail!(
+                    "--local-only cannot be combined with --pin: PIN exchange uses Nostr, \
+                     which requires internet access."
+                );
+            }
+            if local_only && !relay_url.is_empty() {
+                anyhow::bail!(
+                    "--local-only cannot be combined with --relay-url: relays are disabled \
+                     in local-only mode."
+                );
+            }
             if folder {
-                iroh_sender::send_folder(&path, relay_url, pin).await?;
+                iroh_sender::send_folder(&path, relay_url, pin, local_only).await?;
             } else {
-                iroh_sender::send_file(&path, relay_url, pin).await?;
+                iroh_sender::send_file(&path, relay_url, pin, local_only).await?;
             }
         }
 
@@ -231,7 +249,15 @@ async fn receive_with_code(
 
     match token.protocol.as_str() {
         beam::PROTOCOL_IROH => {
-            iroh_receiver::receive(code, output, relay_url, no_resume, pin_info).await?;
+            // A local-only code carries an endpoint address with no relay URL.
+            // Detect that and disable relays on the receiver to match the sender.
+            let local_only = token
+                .addr
+                .as_ref()
+                .map(|addr| addr.relay.is_none())
+                .unwrap_or(false);
+            iroh_receiver::receive(code, output, relay_url, no_resume, pin_info, local_only)
+                .await?;
         }
         beam::PROTOCOL_TOR => {
             anyhow::bail!(

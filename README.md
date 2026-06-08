@@ -10,8 +10,8 @@ A secure, cross-platform, single-binary peer-to-peer file transfer tool with dir
 - **End-to-end encryption** - All transfers use AES-256-GCM encryption
 - **Resumable file transfers** - Interrupted file downloads can resume from where they left off
 - **File and folder transfers** - Send individual files or entire directories (automatically archived)
-- **Multiple transport modes** - iroh (recommended), Tor, WebRTC, and local LAN
-- **Local discovery** - mDNS for same-network transfers without internet
+- **Multiple transport modes** - iroh (recommended), Tor, and WebRTC
+- **Local discovery** - mDNS for same-network transfers without internet (`beam-rs send --local-only`)
 - **NAT traversal** - Automatic relay fallback for iroh; STUN for WebRTC
 - **Anonymous transfers** - Tor hidden services via `beam-rs-tor` for anonymity
 - **Cross-platform** - Standalone binary for macOS, Linux, and Windows
@@ -72,9 +72,6 @@ cargo build --release
 
 # Tor binary (separate crate, anonymous transfers)
 cargo build --release -p beam-rs-tor
-
-# Local LAN binary (separate crate, mDNS discovery)
-cargo build --release -p beam-rs-local
 
 # WebRTC binary (separate crate)
 cargo build --release -p beam-rs-webrtc
@@ -155,8 +152,9 @@ beam-rs receive --pin
 There are **two** ways to transfer without relying on the public internet:
 
 1) **LAN discovery (recommended when both devices share a network)**
-   - Uses mDNS discovery + SPAKE2 PIN
-   - Fast, zero copy/paste, no internet required
+   - `beam-rs send --local-only`: iroh transport with relays disabled, peer
+     discovered over mDNS and connected directly
+   - Fast, no internet required; share the printed beam code with the receiver
 
 2) **Manual WebRTC (when mDNS is blocked but peers still have direct network reachability)**
    - Uses WebRTC DataChannels with **manual** offer/answer code exchange
@@ -164,22 +162,26 @@ There are **two** ways to transfer without relying on the public internet:
 
 > **Note**: Tor mode requires internet access. iroh mode can be air‑gapped when you self‑host the relay and point both sides at it via `--relay-url`; the default public relay requires internet access.
 
-#### LAN discovery (`beam-rs-local`)
+#### LAN discovery (`--local-only`)
 
-Use this mode for transfers on the same network (no internet required). A **PIN** is shown and fed into a SPAKE2 PAKE to derive the AES key (not a beam code).
-
-> Built as a separate binary in this workspace: `cargo build -p beam-rs-local`.
+Use this mode for transfers on the same network (no internet required). It uses
+the same iroh transport and beam code as the default mode, but disables relays
+entirely: the peer is discovered purely over mDNS and connected to directly. The
+receiver auto-detects local-only mode from the code (no flag needed).
 
 ```bash
 # Send locally
-beam-rs-local send /path/to/file
+beam-rs send --local-only /path/to/file
 
 # Send folder locally
-beam-rs-local send /path/to/folder --folder
+beam-rs send --local-only /path/to/folder --folder
 
-# Receive locally
-beam-rs-local receive
+# Receive locally (paste the printed beam code)
+beam-rs receive
 ```
+
+> `--local-only` cannot be combined with `--pin` (PIN exchange uses Nostr, which
+> requires internet) or `--relay-url` (relays are disabled).
 
 ### Manual Mode
 
@@ -211,17 +213,17 @@ For protocol details and wire formats, see [ARCHITECTURE.md](docs/ARCHITECTURE.m
 ## Security
 
 All modes provide end-to-end encryption.
-- **Internet Modes (iroh, Tor, WebRTC)**: The **Beam Code** carries the key/address information.
-- **Local Mode** (`beam-rs-local`): Uses a 12-character PIN that feeds a SPAKE2 PAKE to derive the AES key (no beam code).
+- **All modes (iroh, iroh `--local-only`, Tor, WebRTC)**: The **Beam Code** carries the key/address information.
 
 | Mode | Type | Key Exchange | Transport Encryption | Content Encryption |
 |------|------|--------------|---------------------|-------------------|
 | iroh | Internet | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
+| iroh (`--local-only`) | LAN | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
 | Tor (`beam-rs-tor`) | Internet | Beam Code | Tor circuits | AES-256-GCM |
 | WebRTC | Internet | Beam Code | DTLS (WebRTC) | AES-256-GCM |
-| Local | LAN | SPAKE2 (PIN + transfer_id) | None (raw TCP) | AES-256-GCM |
 
-Internet modes use dual-layer encryption (transport + content). Local mode uses single-layer AES-256-GCM over raw TCP, which is sufficient for trusted LANs.
+All modes use dual-layer encryption (transport + content). `--local-only` is the
+same iroh transport with relays disabled, so it keeps QUIC/TLS 1.3 on the wire.
 
 Relay servers (iroh, Tor) never see decrypted content or encryption keys.
 

@@ -97,13 +97,14 @@ async fn transfer_data_internal(
     transfer_type: TransferType,
     relay_urls: Vec<String>,
     use_pin: bool,
+    local_only: bool,
     shutdown_rx: Option<oneshot::Receiver<()>>,
 ) -> Result<()> {
     // Always generate encryption key for application-layer encryption
     let key = generate_key();
 
     // Create iroh endpoint
-    let endpoint = create_sender_endpoint(relay_urls).await?;
+    let endpoint = create_sender_endpoint(relay_urls, local_only).await?;
 
     // Get our address
     let addr = endpoint.addr();
@@ -279,7 +280,12 @@ async fn transfer_data_internal(
 }
 
 /// Send a file through the beam.
-pub async fn send_file(file_path: &Path, relay_urls: Vec<String>, use_pin: bool) -> Result<()> {
+pub async fn send_file(
+    file_path: &Path,
+    relay_urls: Vec<String>,
+    use_pin: bool,
+    local_only: bool,
+) -> Result<()> {
     send_file_with(
         file_path,
         |file, filename, file_size, checksum, transfer_type| {
@@ -291,6 +297,7 @@ pub async fn send_file(file_path: &Path, relay_urls: Vec<String>, use_pin: bool)
                 transfer_type,
                 relay_urls,
                 use_pin,
+                local_only,
                 None, // No shutdown receiver for resumable file transfers
             )
         },
@@ -304,7 +311,12 @@ pub async fn send_file(file_path: &Path, relay_urls: Vec<String>, use_pin: bool)
 /// especially when sending from Unix to Windows or vice versa. Windows does not
 /// support Unix permission modes (rwx), so files may have different permissions
 /// after extraction on Windows.
-pub async fn send_folder(folder_path: &Path, relay_urls: Vec<String>, use_pin: bool) -> Result<()> {
+pub async fn send_folder(
+    folder_path: &Path,
+    relay_urls: Vec<String>,
+    use_pin: bool,
+    local_only: bool,
+) -> Result<()> {
     send_folder_with(
         folder_path,
         |file, filename, file_size, checksum, transfer_type| {
@@ -316,6 +328,7 @@ pub async fn send_folder(folder_path: &Path, relay_urls: Vec<String>, use_pin: b
                 transfer_type,
                 relay_urls,
                 use_pin,
+                local_only,
                 None, // Shutdown handling is done by send_folder_with
             )
         },

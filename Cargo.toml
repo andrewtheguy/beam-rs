@@ -3,13 +3,12 @@ resolver = "2"
 members = [
     "crates/beam-common",
     "crates/beam-rs",
-    "crates/beam-rs-local",
     "crates/beam-rs-tor",
     "crates/beam-rs-webrtc",
 ]
 
 [workspace.package]
-version = "0.0.4"
+version = "0.0.5"
 edition = "2024"
 
 [workspace.dependencies]

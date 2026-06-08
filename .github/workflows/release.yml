@@ -93,15 +93,6 @@ jobs:
           name: release-webrtc-${{ matrix.suffix }}
           path: target/release/beam-rs-webrtc-${{ matrix.suffix }}
 
-      - name: Rename Local Binary
-        run: mv target/${{ matrix.target }}/release/beam-rs-local target/release/beam-rs-local-${{ matrix.suffix }}
-
-      - name: Upload Local release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-local-${{ matrix.suffix }}
-          path: target/release/beam-rs-local-${{ matrix.suffix }}
-
       - name: Rename Tor Binary
         run: mv target/${{ matrix.target }}/release/beam-rs-tor target/release/beam-rs-tor-${{ matrix.suffix }}
 
@@ -149,15 +140,6 @@ jobs:
           name: release-webrtc-${{ matrix.suffix }}
           path: target/release/beam-rs-webrtc-${{ matrix.suffix }}
 
-      - name: Rename Local Binary
-        run: mv target/${{ matrix.target }}/release/beam-rs-local target/release/beam-rs-local-${{ matrix.suffix }}
-
-      - name: Upload Local release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-local-${{ matrix.suffix }}
-          path: target/release/beam-rs-local-${{ matrix.suffix }}
-
       - name: Rename Tor Binary
         run: mv target/${{ matrix.target }}/release/beam-rs-tor target/release/beam-rs-tor-${{ matrix.suffix }}
 
@@ -203,15 +185,6 @@ jobs:
         with:
           name: release-webrtc-${{ env.SUFFIX }}
           path: target/release/beam-rs-webrtc-${{ env.SUFFIX }}.exe
-
-      - name: Rename Local Binary
-        run: move target\${{ env.TARGET }}\release\beam-rs-local.exe target\release\beam-rs-local-${{ env.SUFFIX }}.exe
-
-      - name: Upload Local release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-local-${{ env.SUFFIX }}
-          path: target/release/beam-rs-local-${{ env.SUFFIX }}.exe
 
       - name: Rename Tor Binary
         run: move target\${{ env.TARGET }}\release\beam-rs-tor.exe target\release\beam-rs-tor-${{ env.SUFFIX }}.exe
