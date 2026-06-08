@@ -541,7 +541,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "beam-common"
-version = "0.0.5-beta1"
+version = "0.0.5"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "beam-rs"
-version = "0.0.5-beta1"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -593,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "beam-rs-tor"
-version = "0.0.5-beta1"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "arti-client",
@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "beam-rs-webrtc"
-version = "0.0.5-beta1"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "base64",
