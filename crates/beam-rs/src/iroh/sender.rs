@@ -110,7 +110,7 @@ async fn transfer_data_internal(
     let addr = endpoint.addr();
 
     // Generate beam code
-    let code = generate_code(&addr, &key)?;
+    let code = generate_code(&addr, &key, local_only)?;
 
     if use_pin {
         print_receiver_command("beam-rs receive --pin");

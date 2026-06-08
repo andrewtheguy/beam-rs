@@ -11,7 +11,7 @@ A secure, cross-platform, single-binary peer-to-peer file transfer tool with dir
 - **Resumable file transfers** - Interrupted file downloads can resume from where they left off
 - **File and folder transfers** - Send individual files or entire directories (automatically archived)
 - **Multiple transport modes** - iroh (recommended), Tor, and WebRTC
-- **Local discovery** - mDNS for same-network transfers without internet (`beam-rs send --local-only`)
+- **Local-only transfers** - same-network transfers without internet via LAN addresses embedded in the beam code (`beam-rs send --local-only`)
 - **NAT traversal** - Automatic relay fallback for iroh; STUN for WebRTC
 - **Anonymous transfers** - Tor hidden services via `beam-rs-tor` for anonymity
 - **Cross-platform** - Standalone binary for macOS, Linux, and Windows
@@ -151,9 +151,10 @@ beam-rs receive --pin
 
 There are **two** ways to transfer without relying on the public internet:
 
-1) **LAN discovery (recommended when both devices share a network)**
-   - `beam-rs send --local-only`: iroh transport with relays disabled, peer
-     discovered over mDNS and connected directly
+1) **LAN direct (recommended when both devices share a network)**
+   - `beam-rs send --local-only`: iroh transport with relays disabled; the
+     sender's LAN addresses are embedded in the beam code and connected to
+     directly (mDNS as a fallback)
    - Fast, no internet required; share the printed beam code with the receiver
 
 2) **Manual WebRTC (when mDNS is blocked but peers still have direct network reachability)**
@@ -162,12 +163,15 @@ There are **two** ways to transfer without relying on the public internet:
 
 > **Note**: Tor mode requires internet access. iroh mode can be air‑gapped when you self‑host the relay and point both sides at it via `--relay-url`; the default public relay requires internet access.
 
-#### LAN discovery (`--local-only`)
+#### LAN direct (`--local-only`)
 
 Use this mode for transfers on the same network (no internet required). It uses
 the same iroh transport and beam code as the default mode, but disables relays
-entirely: the peer is discovered purely over mDNS and connected to directly. The
-receiver auto-detects local-only mode from the code (no flag needed).
+entirely: the sender embeds its LAN addresses in the beam code so the receiver
+connects directly, with mDNS kept as a fallback. (Embedding the addresses avoids
+relying on mDNS resolution, which is unreliable on some platforms such as
+macOS.) The receiver auto-detects local-only mode from the code (no flag
+needed).
 
 ```bash
 # Send locally

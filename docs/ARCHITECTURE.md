@@ -11,7 +11,7 @@ beam-rs supports two main categories of transport:
     - **Tor Mode**: Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs-tor send`
     - **WebRTC Mode**: Direct P2P via WebRTC DataChannels with Nostr signaling via `beam-rs-webrtc send`
 2. **Local Transfers** (using `beam-rs send --local-only`):
-    - **Local-only Mode**: LAN-only transfers using the iroh QUIC/TLS stack with relays disabled; the peer is discovered over mDNS and connected to directly. Uses the same beam code as iroh mode.
+    - **Local-only Mode**: LAN-only transfers using the iroh QUIC/TLS stack with relays disabled; the sender's LAN addresses are embedded in the beam code and connected to directly (mDNS as a fallback). Uses the same beam code format as iroh mode.
 
 ## Transfer Flows
 
@@ -155,30 +155,31 @@ sequenceDiagram
 
 Local-only mode is designed for transfers on the same LAN without internet
 access. It is the **same** iroh transport and beam code as the default mode,
-with one difference: relays are disabled (`RelayMode::Disabled`), so the peer is
-discovered purely via iroh's mDNS address lookup and connected to directly over
-QUIC. The receiver auto-detects this mode from a beam code that carries an
-endpoint address with no relay URL.
+with one difference: relays are disabled (`RelayMode::Disabled`). The sender
+waits for its own LAN addresses and **embeds them directly in the beam code**,
+so the receiver connects straight to those addresses over QUIC without depending
+on mDNS resolution (mDNS is kept configured as a fallback). This matters because
+mDNS resolution is unreliable on some platforms (notably macOS, where the DNS
+config can fail to parse). The receiver auto-detects this mode from a beam code
+that carries an endpoint address with no relay URL.
 
 ```mermaid
 sequenceDiagram
     participant Sender
-    participant mDNS
     participant Receiver
 
     Sender->>Sender: 1. Bind iroh endpoint (RelayMode::Disabled)
-    Sender->>mDNS: 2. Advertise endpoint + direct addrs (mDNS address lookup)
-    Sender->>Sender: 3. Wait for a direct address, then print beam code
-    Note over Sender: Beam code has endpoint id, no relay URL
+    Sender->>Sender: 2. Wait for a direct LAN address
+    Sender->>Sender: 3. Embed LAN addresses in beam code, print it
+    Note over Sender: Beam code has endpoint id + LAN addrs, no relay URL
 
     Note over Sender: User shares beam code out-of-band
 
     Receiver->>Receiver: 4. Parse code, detect no relay -> local-only
-    Receiver->>mDNS: 5. Resolve endpoint id -> direct addrs
-    Receiver->>Sender: 6. Connect directly over QUIC (ALPN beam-transfer/1)
+    Receiver->>Sender: 5. Connect directly to embedded addrs over QUIC (ALPN beam-transfer/1)
 
     Note over Sender,Receiver: From here identical to iroh mode
-    Sender->>Receiver: 7. Encrypted header / chunks / ACK (AES-256-GCM)
+    Sender->>Receiver: 6. Encrypted header / chunks / ACK (AES-256-GCM)
 ```
 
 ## Connection Types/Modes
@@ -194,8 +195,8 @@ sequenceDiagram
 
 ### Local-only Mode (`beam-rs send --local-only`)
 - **Transport**: QUIC / TLS 1.3 (same as iroh mode)
-- **Discovery**: iroh mDNS address lookup only; relays disabled (`RelayMode::Disabled`)
-- **Key Exchange**: Beam code (carries the AES key and an endpoint address with no relay URL)
+- **Discovery**: LAN addresses embedded in the beam code (mDNS address lookup kept as a fallback); relays disabled (`RelayMode::Disabled`)
+- **Key Exchange**: Beam code (carries the AES key and an endpoint address with no relay URL but with the sender's LAN addresses)
 - **Encryption**: Always AES-256-GCM at the application layer, plus QUIC/TLS encryption
 - **Reachability**: The sender waits for at least one direct address before printing the code (it cannot wait for a relay, since relays are disabled). Incompatible with `--pin` and `--relay-url`.
 
