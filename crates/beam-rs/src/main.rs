@@ -60,11 +60,6 @@ enum Commands {
 
     /// Receive a file or folder using a beam code or PIN
     Receive {
-        /// Beam code or PIN from sender (will prompt if not provided).
-        /// A 12-character PIN is auto-detected and resolved via Nostr.
-        #[arg(short, long)]
-        code: Option<String>,
-
         /// Output directory (default: current directory)
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -260,20 +255,13 @@ async fn run(command: Commands) -> Result<()> {
             }
         }
 
-        Commands::Receive {
-            code,
-            output,
-            no_resume,
-        } => {
+        Commands::Receive { output, no_resume } => {
             // Validate output directory if provided
             validate_output_dir(&output)?;
 
-            // Get the input from the argument or prompt, then auto-detect whether
-            // it is a 12-character PIN (resolved via Nostr) or a full beam code.
-            let input = match code {
-                Some(c) => c.trim().to_string(),
-                None => prompt_code_or_pin()?,
-            };
+            // Prompt for the input, then auto-detect whether it is a 12-character
+            // PIN (resolved via Nostr) or a full beam code.
+            let input = prompt_code_or_pin()?;
 
             let (code, pin_info) = if crate::auth::pin::validate_pin(&input) {
                 ui::sink().status("Searching for beam token via Nostr...");
@@ -331,7 +319,7 @@ async fn receive_with_code(
         beam::PROTOCOL_TOR => {
             anyhow::bail!(
                 "This beam code uses Tor transport.\n\
-                 To receive via Tor, use: beam-rs-tor receive --code <CODE>"
+                 To receive via Tor, use: beam-rs-tor receive (it will prompt for the code)"
             );
         }
         proto => {

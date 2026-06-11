@@ -102,8 +102,8 @@ beam-rs-tor send /path/to/file
 
 ```bash
 beam-rs receive
-# Or with the code/PIN directly (a 12-character PIN is auto-detected)
-beam-rs receive --code <BEAM_CODE_OR_PIN>
+# Prompts for the beam code or PIN (a 12-character PIN is auto-detected and
+# resolved via Nostr).
 ```
 
 ---

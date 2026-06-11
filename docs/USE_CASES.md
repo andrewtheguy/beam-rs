@@ -12,8 +12,8 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   # Sender
   beam-rs send --no-server /path/to/file
 
-  # Receiver (paste the printed beam code; no-server is auto-detected)
-  beam-rs receive --code <BEAM_CODE>
+  # Receiver (paste the printed beam code at the prompt; no-server is auto-detected)
+  beam-rs receive
   ```
 - **Experience**: The sender prints a beam code once it has a direct address. Share the code out-of-band; the receiver auto-detects no-server mode from the code (no relay URL) and connects directly via the embedded addresses.
 
@@ -29,8 +29,8 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   # Sender
   beam-rs send /path/to/file
 
-  # Receiver (iroh code)
-  beam-rs receive --code <BEAM_CODE>
+  # Receiver (paste the iroh code at the prompt)
+  beam-rs receive
   ```
 - **Experience**: Share the beam code via any channel (chat, paper, verbal). iroh handles NAT traversal automatically without needing IP addresses.
 
@@ -61,8 +61,8 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   # Sender
   beam-rs send --no-server /path/to/file
 
-  # Receiver (paste the printed beam code)
-  beam-rs receive --code <BEAM_CODE>
+  # Receiver (paste the printed beam code at the prompt)
+  beam-rs receive
   ```
 
 ---
