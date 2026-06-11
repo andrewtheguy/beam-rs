@@ -175,7 +175,7 @@ impl UiSink for PlainSink {
         println!("\n⚠️  Warning: {} is large ({}).", name, size_str);
         println!("Folder transfers are NOT resumable. If interrupted, you must start over.");
         println!(
-            "Large folders are recommended for local connections only (beam-rs send --local-only)."
+            "Large folders are recommended for local connections only (beam-rs send --no-server)."
         );
         print!("Continue anyway? [y/N]: ");
         std::io::stdout().flush()?;

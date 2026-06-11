@@ -64,6 +64,15 @@ pub struct MinimalAddr {
     /// to minimize token size for copy/paste usability)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay: Option<String>,
+    /// Direct socket addresses (host:port) for the endpoint.
+    ///
+    /// Normally empty — direct addresses are discovered at connect time via the
+    /// relay or mDNS. In no-server mode there is no relay, so the sender embeds
+    /// every direct address iroh discovered (LAN and any public/port-mapped
+    /// addresses) here, letting the receiver attempt them all; mDNS resolution
+    /// (unreliable on some platforms) stays as a fallback.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ip_addrs: Vec<String>,
 }
 
 /// Beam token containing all transfer metadata

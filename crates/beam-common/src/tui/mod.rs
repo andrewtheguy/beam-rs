@@ -566,7 +566,7 @@ fn run_prompt(terminal: &mut DefaultTerminal, kind: PromptKind) -> io::Result<Pr
                     Span::raw(format!(" is large ({}).", format_bytes(size))),
                 ]),
                 Line::from("Folder transfers are NOT resumable; if interrupted you start over."),
-                Line::from("Recommended for local connections only (send --local-only)."),
+                Line::from("Recommended for local connections only (send --no-server)."),
                 Line::from(""),
                 Line::from("Continue anyway?  [y]es   [N]o"),
             ];

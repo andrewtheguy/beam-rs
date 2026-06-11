@@ -9,8 +9,8 @@ beam-rs supports two main categories of transport:
 1. **Internet Transfers** (beam code based):
     - **iroh Mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`
     - **Tor Mode**: Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs-tor send`
-2. **Local Transfers** (using `beam-rs send --local-only`):
-    - **Local-only Mode**: LAN-only transfers using the iroh QUIC/TLS stack with relays disabled; the sender is discovered by mDNS and connected to directly. Uses the same beam code format as iroh mode.
+2. **Serverless Transfers** (using `beam-rs send --no-server`):
+    - **No-server Mode**: transfers using the iroh QUIC/TLS stack with relays disabled (no third-party server). The sender embeds all of its discovered IPs (LAN and any public/port-mapped addresses) in the beam code so the receiver connects directly, with mDNS as a fallback. Uses the same beam code format as iroh mode.
 
 ## Transfer Flows
 
@@ -61,16 +61,21 @@ sequenceDiagram
     Receiver->>Sender: 9. Send Encrypted ACK
 ```
 
-#### Local-only Mode (iroh with relays disabled)
+#### No-server Mode (iroh with relays disabled)
 
-Local-only mode is designed for transfers on the same LAN without internet
-access. It is the **same** iroh transport and beam code as the default mode,
-with one difference: relays are disabled (`RelayMode::Disabled`). The sender
-waits for its own LAN addresses so mDNS has something to advertise, then prints
-a beam code containing the endpoint ID with no relay URL. The receiver
-auto-detects this mode from the missing relay URL and resolves the sender over
-mDNS. Local-only endpoints use a DNS resolver that does not read host DNS
-configuration, avoiding macOS scoped-resolver parse warnings in relay-free mode.
+No-server mode is for transfers without any third-party server (no relay, no
+Nostr), and is primarily intended for the same LAN. It is the **same** iroh
+transport and beam code as the default mode, with one difference: relays are
+disabled (`RelayMode::Disabled`). The sender waits for at least one direct
+address, then prints a beam code containing the endpoint ID plus every direct
+address iroh discovered (LAN interfaces and any public/port-mapped addresses)
+and no relay URL. The receiver auto-detects this mode from the missing relay URL
+and connects directly to the embedded addresses, falling back to mDNS. It is not
+strictly local-only — enforcing that would be an unnecessary burden — so a WAN
+connection may succeed when a public/port-mapped address is reachable, though
+NAT and firewalls commonly prevent it. No-server endpoints use a DNS resolver
+that does not read host DNS configuration, avoiding macOS scoped-resolver parse
+warnings in relay-free mode.
 
 ```mermaid
 sequenceDiagram
@@ -78,14 +83,14 @@ sequenceDiagram
     participant Receiver
 
     Sender->>Sender: 1. Bind iroh endpoint (RelayMode::Disabled)
-    Sender->>Sender: 2. Wait for a direct LAN address
+    Sender->>Sender: 2. Wait for a direct address
     Sender->>Sender: 3. Print beam code
-    Note over Sender: Beam code has endpoint id, no relay URL
+    Note over Sender: Beam code has endpoint id + discovered IPs (LAN/public), no relay URL
 
     Note over Sender: User shares beam code out-of-band
 
-    Receiver->>Receiver: 4. Parse code, detect no relay -> local-only
-    Receiver->>Sender: 5. Resolve by mDNS and connect directly over QUIC (ALPN beam-transfer/1)
+    Receiver->>Receiver: 4. Parse code, detect no relay -> no-server
+    Receiver->>Sender: 5. Connect directly to embedded IPs (mDNS fallback) over QUIC (ALPN beam-transfer/1)
 
     Note over Sender,Receiver: From here identical to iroh mode
     Sender->>Receiver: 6. Encrypted header / chunks / ACK (AES-256-GCM)
@@ -143,13 +148,13 @@ sequenceDiagram
 - **PIN Support**: Yes (`beam-rs send --pin` / `beam-rs receive --pin`)
 - **Encryption**: Always AES-256-GCM encrypted at the application layer, plus QUIC/TLS encryption.
 
-### Local-only Mode (`beam-rs send --local-only`)
+### No-server Mode (`beam-rs send --no-server`)
 - **Transport**: QUIC / TLS 1.3 (same as iroh mode)
-- **Discovery**: mDNS address lookup; relays disabled (`RelayMode::Disabled`)
-- **Key Exchange**: Beam code (carries the AES key and an endpoint address with no relay URL)
-- **PIN Support**: No; PIN exchange uses Nostr, which requires internet access
+- **Discovery**: Direct addresses embedded in the beam code (every IP iroh discovered — LAN and any public/port-mapped addresses), with mDNS address lookup as a fallback; relays disabled (`RelayMode::Disabled`)
+- **Key Exchange**: Beam code (carries the AES key and an endpoint address with embedded IPs and no relay URL)
+- **PIN Support**: No; PIN exchange uses Nostr, a third-party server
 - **Encryption**: Always AES-256-GCM at the application layer, plus QUIC/TLS encryption
-- **Reachability**: The sender waits for at least one direct address before printing the code so mDNS can advertise it (it cannot wait for a relay, since relays are disabled). Incompatible with `--pin` and `--relay-url`.
+- **Reachability**: Primarily intended for the same LAN. The sender waits for at least one direct address before printing the code so the embedded addresses are populated (it cannot wait for a relay, since relays are disabled). Not strictly local-only — a WAN connection may succeed when a public/port-mapped address is reachable, but NAT/firewalls commonly prevent it. Incompatible with `--pin` and `--relay-url`.
 
 ### Tor Mode (`beam-rs-tor send`)
 - **Transport**: Tor Onion Services
@@ -172,7 +177,7 @@ iroh mode uses two encryption layers for defense in depth:
 
 ### PIN-based Key Exchange (PIN Mode)
 PIN mode is available for the default iroh transport (`beam-rs send --pin`). It
-is not available for iroh `--local-only` or Tor.
+is not available for iroh `--no-server` or Tor.
 
 PIN mode exchanges the beam code through Nostr keyed by a short PIN, then runs
 a SPAKE2 handshake over the established QUIC stream to derive the session key.
@@ -197,7 +202,7 @@ All beam codes include a creation timestamp and are validated against a TTL to p
 - **Clock Skew**: Allows up to 60 seconds into the future to handle minor clock drift
 
 **Validation Points:**
-1. **Beam Codes** (iroh, iroh `--local-only`, tor): Validated in `parse_code()` before connection. Local-only codes use the same v4 token format and are validated the same way.
+1. **Beam Codes** (iroh, iroh `--no-server`, tor): Validated in `parse_code()` before connection. No-server codes use the same v4 token format and are validated the same way.
 
 **Error Messages:**
 - Expired codes: "Token expired: code is X minutes old (max 60 minutes). Please request a new code from the sender."
@@ -207,7 +212,7 @@ All beam codes include a creation timestamp and are validated against a TTL to p
 
 ### Encrypted Message Format (Stream-based transports)
 
-All encrypted messages (used by Iroh, iroh `--local-only`, and Tor modes) follow this format:
+All encrypted messages (used by Iroh, iroh `--no-server`, and Tor modes) follow this format:
 
 ```
 [length: 4 bytes BE][encrypted_payload]
