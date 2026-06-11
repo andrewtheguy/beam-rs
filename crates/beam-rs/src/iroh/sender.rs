@@ -114,11 +114,9 @@ async fn transfer_data_internal(
     // receiver adopts them without needing its own --relay-url flag.
     let code = generate_code(&addr, &key, &relay_urls, no_server)?;
 
-    if use_pin {
-        print_receiver_command("beam-rs receive --pin");
-    } else {
-        print_receiver_command("beam-rs receive");
-    }
+    // `receive` takes no code/PIN argument — it prompts for the input and
+    // auto-detects whether it is a full beam code or a PIN.
+    print_receiver_command("beam-rs receive");
 
     ui::sink().show_code(&code);
 
