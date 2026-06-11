@@ -11,7 +11,7 @@ A secure, cross-platform, single-binary peer-to-peer file transfer tool with dir
 - **Resumable file transfers** - Interrupted file downloads can resume from where they left off
 - **File and folder transfers** - Send individual files or entire directories (automatically archived)
 - **Multiple transport modes** - iroh (recommended) and Tor
-- **Local-only transfers** - same-network transfers without internet via mDNS discovery (`beam-rs send --local-only`)
+- **Serverless transfers** - direct transfers with no third-party server; all discovered IPs (LAN and public) are embedded in the beam code, with mDNS as a fallback (`beam-rs send --no-server`)
 - **NAT traversal** - Automatic relay fallback for iroh
 - **Anonymous transfers** - Tor hidden services via `beam-rs-tor` for anonymity
 - **Cross-platform** - Standalone binary for macOS, Linux, and Windows
@@ -110,36 +110,46 @@ beam-rs receive --pin
 
 ---
 
-### Local/Offline Transfers
+### Serverless Transfers
 
-**LAN direct (recommended when both devices share a network)**
-- `beam-rs send --local-only`: iroh transport with relays disabled; the
-  sender is discovered by mDNS and connected to directly
-- Fast, no internet required; share the printed beam code with the receiver
+**No third-party server (primarily for same-network/LAN transfers)**
+- `beam-rs send --no-server`: iroh transport with relays disabled; the sender
+  embeds all of its discovered IPs (LAN and any public/port-mapped addresses) in
+  the beam code, with mDNS kept as a discovery fallback
+- No relay or Nostr server is contacted; share the printed beam code with the receiver
+- The expected use case is a shared LAN. It is not *strictly* local-only —
+  enforcing that would be an unnecessary burden — so a WAN connection can
+  succeed if a public/port-mapped address happens to be reachable, but NAT and
+  firewalls usually prevent that.
 
 > **Note**: Tor mode requires internet access. iroh mode can be air‑gapped when you self‑host the relay and point both sides at it via `--relay-url`; the default public relay requires internet access.
 
-#### LAN direct (`--local-only`)
+#### No-server (`--no-server`)
 
-Use this mode for transfers on the same network (no internet required). It uses
-the same iroh transport and beam code as the default mode, but disables relays
-entirely: the beam code carries the sender endpoint ID without relay URLs, and
-the receiver resolves that endpoint on the LAN with mDNS. The receiver
-auto-detects local-only mode from the code (no flag needed).
+Use this mode to transfer without any third-party server (no relay, no Nostr).
+It uses the same iroh transport and beam code as the default mode, but disables
+relays entirely: the beam code carries the sender endpoint ID plus every direct
+address iroh discovered — LAN interfaces and any public or port-mapped (UPnP/
+PCP/NAT-PMP) addresses — so the receiver attempts them all directly, with mDNS
+as a fallback. It is primarily intended for transfers on the same LAN; it is not
+strictly local-only (enforcing that would be an unnecessary burden), so a WAN
+connection may also succeed when a public/port-mapped address is reachable,
+though NAT and firewalls commonly prevent it. The receiver auto-detects
+no-server mode from the code (no flag needed).
 
 ```bash
-# Send locally
-beam-rs send --local-only /path/to/file
+# Send without a server
+beam-rs send --no-server /path/to/file
 
-# Send folder locally
-beam-rs send --local-only /path/to/folder --folder
+# Send folder without a server
+beam-rs send --no-server /path/to/folder --folder
 
-# Receive locally (paste the printed beam code)
+# Receive (paste the printed beam code)
 beam-rs receive
 ```
 
-> `--local-only` cannot be combined with `--pin` (PIN exchange uses Nostr, which
-> requires internet) or `--relay-url` (relays are disabled).
+> `--no-server` cannot be combined with `--pin` (PIN exchange uses Nostr, a
+> third-party server) or `--relay-url` (relays are disabled).
 
 ## Common Use Cases
 
@@ -154,15 +164,15 @@ For protocol details and wire formats, see [ARCHITECTURE.md](docs/ARCHITECTURE.m
 ## Security
 
 All modes provide end-to-end encryption.
-- **All modes (iroh, iroh `--local-only`, Tor)**: The **Beam Code** carries the key/address information.
+- **All modes (iroh, iroh `--no-server`, Tor)**: The **Beam Code** carries the key/address information.
 
 | Mode | Type | Key Exchange | Transport Encryption | Content Encryption |
 |------|------|--------------|---------------------|-------------------|
 | iroh | Internet | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
-| iroh (`--local-only`) | LAN | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
+| iroh (`--no-server`) | Direct (LAN/public) | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
 | Tor (`beam-rs-tor`) | Internet | Beam Code | Tor circuits | AES-256-GCM |
 
-All modes use dual-layer encryption (transport + content). `--local-only` is the
+All modes use dual-layer encryption (transport + content). `--no-server` is the
 same iroh transport with relays disabled, so it keeps QUIC/TLS 1.3 on the wire.
 
 Relay servers (iroh, Tor) never see decrypted content or encryption keys.

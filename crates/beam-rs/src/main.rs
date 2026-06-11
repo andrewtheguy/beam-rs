@@ -49,10 +49,13 @@ enum Commands {
         #[arg(long)]
         relay_url: Vec<String>,
 
-        /// Same-LAN transfer only: disable relays and the internet, discover
-        /// the peer purely via mDNS. Incompatible with --pin and --relay-url.
+        /// No third-party server: disable relays (and Nostr), embed all
+        /// discovered IPs (LAN and public) in the beam code, and connect
+        /// directly via those with mDNS as a fallback. Primarily for same-LAN
+        /// transfers (not strictly local-only). Incompatible with --pin and
+        /// --relay-url.
         #[arg(long)]
-        local_only: bool,
+        no_server: bool,
     },
 
     /// Receive a file or folder using a code
@@ -197,25 +200,25 @@ async fn run(command: Commands) -> Result<()> {
             folder,
             pin,
             relay_url,
-            local_only,
+            no_server,
         } => {
             validate_path(&path, folder)?;
-            if local_only && pin {
+            if no_server && pin {
                 anyhow::bail!(
-                    "--local-only cannot be combined with --pin: PIN exchange uses Nostr, \
-                     which requires internet access."
+                    "--no-server cannot be combined with --pin: PIN exchange uses Nostr, \
+                     which requires a third-party server."
                 );
             }
-            if local_only && !relay_url.is_empty() {
+            if no_server && !relay_url.is_empty() {
                 anyhow::bail!(
-                    "--local-only cannot be combined with --relay-url: relays are disabled \
-                     in local-only mode."
+                    "--no-server cannot be combined with --relay-url: relays are disabled \
+                     in no-server mode."
                 );
             }
             if folder {
-                iroh_sender::send_folder(&path, relay_url, pin, local_only).await?;
+                iroh_sender::send_folder(&path, relay_url, pin, no_server).await?;
             } else {
-                iroh_sender::send_file(&path, relay_url, pin, local_only).await?;
+                iroh_sender::send_file(&path, relay_url, pin, no_server).await?;
             }
         }
 
@@ -282,14 +285,15 @@ async fn receive_with_code(
 
     match token.protocol.as_str() {
         beam::PROTOCOL_IROH => {
-            // A local-only code carries an endpoint address with no relay URL.
-            // Detect that and disable relays on the receiver to match the sender.
-            let local_only = token
+            // A no-server code carries an endpoint address with no relay URL
+            // (but embedded direct IPs). Detect that and disable relays on the
+            // receiver to match the sender.
+            let no_server = token
                 .addr
                 .as_ref()
                 .map(|addr| addr.relay.is_none())
                 .unwrap_or(false);
-            iroh_receiver::receive(code, output, relay_url, no_resume, pin_info, local_only)
+            iroh_receiver::receive(code, output, relay_url, no_resume, pin_info, no_server)
                 .await?;
         }
         beam::PROTOCOL_TOR => {

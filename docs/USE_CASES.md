@@ -2,20 +2,20 @@
 
 This guide describes common scenarios where `beam-rs` shines and which mode to use for each.
 
-## 1. No Internet Access (LAN / Air-gapped)
-**Scenario**: You need to transfer files without using the public internet, with both machines on the same LAN.
+## 1. No Third-Party Server (LAN / Air-gapped)
+**Scenario**: You need to transfer files without relying on any third-party server (relay or Nostr), typically on a shared LAN or an air-gapped network.
 
-**Solution**: **Local-only Mode** (`beam-rs send --local-only`)
-- **Why**: Same iroh transport as the default mode, but with relays disabled. The receiver resolves the sender on the LAN with mDNS and connects directly, so no data leaves your local network and no relay/internet is contacted.
+**Solution**: **No-server Mode** (`beam-rs send --no-server`)
+- **Why**: Same iroh transport as the default mode, but with relays disabled. The sender embeds every direct address iroh discovered (LAN interfaces and any public/port-mapped addresses) in the beam code, so the receiver attempts them all directly, with mDNS as a fallback. No relay or Nostr server is contacted. The expected use case is a shared LAN — it is not *strictly* local-only (enforcing that would be an unnecessary burden), so a WAN connection can succeed if a public/port-mapped address happens to be reachable, but NAT/firewalls usually prevent it.
 - **Command**:
   ```bash
   # Sender
-  beam-rs send --local-only /path/to/file
+  beam-rs send --no-server /path/to/file
 
-  # Receiver (paste the printed beam code; local-only is auto-detected)
+  # Receiver (paste the printed beam code; no-server is auto-detected)
   beam-rs receive --code <BEAM_CODE>
   ```
-- **Experience**: The sender prints a beam code once it has a local address. Share the code out-of-band; the receiver auto-detects local-only mode from the code (no relay URL) and connects directly.
+- **Experience**: The sender prints a beam code once it has a direct address. Share the code out-of-band; the receiver auto-detects no-server mode from the code (no relay URL) and connects directly via the embedded addresses.
 
 ---
 
@@ -53,12 +53,12 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   1. Sender sees: `PIN: A1b2C3d4E5f6` (example)
   2. Receiver runs the matching `receive --pin` command and types `A1b2C3d4E5f6`.
 
-**Solution B**: **Local-only Mode** (Same network, no internet)
-- **Why**: Stays entirely on the LAN (relays disabled; sender discovery uses mDNS). Note this still requires moving the beam code between devices — handy when you can scan/share the code but want zero internet involvement.
+**Solution B**: **No-server Mode** (No third-party server)
+- **Why**: Contacts no relay or Nostr server (relays disabled); the sender embeds its discovered IPs in the beam code and the receiver connects directly, with mDNS as a fallback. Note this still requires moving the beam code between devices — handy when you can scan/share the code but want zero third-party involvement.
 - **Command**:
   ```bash
   # Sender
-  beam-rs send --local-only /path/to/file
+  beam-rs send --no-server /path/to/file
 
   # Receiver (paste the printed beam code)
   beam-rs receive --code <BEAM_CODE>
@@ -119,11 +119,11 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   beam-rs send --relay-url https://my-private-relay.com /path/to/file
   ```
 
-**Solution B**: **Local-only Mode** (Same network)
-- **Why**: Uses mDNS discovery with relays disabled and no external dependencies. Works completely offline.
+**Solution B**: **No-server Mode** (No third-party server)
+- **Why**: Relays disabled and no external dependencies; the sender's discovered IPs are embedded in the beam code, with mDNS as a fallback. Works completely offline on a shared LAN.
 - **Command**:
   ```bash
-  beam-rs send --local-only /path/to/file
+  beam-rs send --no-server /path/to/file
   ```
 
 ---

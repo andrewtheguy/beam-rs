@@ -98,20 +98,20 @@ async fn transfer_data_internal(
     transfer_type: TransferType,
     relay_urls: Vec<String>,
     use_pin: bool,
-    local_only: bool,
+    no_server: bool,
     shutdown_rx: Option<oneshot::Receiver<()>>,
 ) -> Result<()> {
     // Always generate encryption key for application-layer encryption
     let key = generate_key();
 
     // Create iroh endpoint
-    let endpoint = create_sender_endpoint(relay_urls, local_only).await?;
+    let endpoint = create_sender_endpoint(relay_urls, no_server).await?;
 
     // Get our address
     let addr = endpoint.addr();
 
     // Generate beam code
-    let code = generate_code(&addr, &key)?;
+    let code = generate_code(&addr, &key, no_server)?;
 
     if use_pin {
         print_receiver_command("beam-rs receive --pin");
@@ -289,7 +289,7 @@ pub async fn send_file(
     file_path: &Path,
     relay_urls: Vec<String>,
     use_pin: bool,
-    local_only: bool,
+    no_server: bool,
 ) -> Result<()> {
     send_file_with(
         file_path,
@@ -302,7 +302,7 @@ pub async fn send_file(
                 transfer_type,
                 relay_urls,
                 use_pin,
-                local_only,
+                no_server,
                 None, // No shutdown receiver for resumable file transfers
             )
         },
@@ -320,7 +320,7 @@ pub async fn send_folder(
     folder_path: &Path,
     relay_urls: Vec<String>,
     use_pin: bool,
-    local_only: bool,
+    no_server: bool,
 ) -> Result<()> {
     send_folder_with(
         folder_path,
@@ -333,7 +333,7 @@ pub async fn send_folder(
                 transfer_type,
                 relay_urls,
                 use_pin,
-                local_only,
+                no_server,
                 None, // Shutdown handling is done by send_folder_with
             )
         },

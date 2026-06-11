@@ -224,11 +224,12 @@ fn print_relay_info(relay_urls: &[String]) {
 /// The endpoint is configured with ALPN for beam transfers.
 /// Multiple relay URLs provide automatic failover based on latency.
 ///
-/// When `local_only` is set, relays are disabled entirely and the peer is
-/// discovered by mDNS — no internet or relay server is contacted.
-pub async fn create_sender_endpoint(relay_urls: Vec<String>, local_only: bool) -> Result<Endpoint> {
-    let relay_mode = if local_only {
-        eprintln!("Local-only mode (LAN direct, no relay)");
+/// When `no_server` is set, relays are disabled entirely (no third-party server
+/// is contacted): the endpoint's discovered direct addresses are embedded in the
+/// beam code and mDNS is kept as a discovery fallback.
+pub async fn create_sender_endpoint(relay_urls: Vec<String>, no_server: bool) -> Result<Endpoint> {
+    let relay_mode = if no_server {
+        eprintln!("No-server mode (direct connection, no relay)");
         RelayMode::Disabled
     } else {
         print_relay_info(&relay_urls);
@@ -252,10 +253,11 @@ pub async fn create_sender_endpoint(relay_urls: Vec<String>, local_only: bool) -
         .await
         .context("Failed to create endpoint")?;
 
-    if local_only {
+    if no_server {
         // `online()` waits for a home relay to connect, which never happens
         // with relays disabled. Instead wait until we have at least one direct
-        // address so mDNS has an address to advertise.
+        // address so the printed beam code embeds a reachable address (and mDNS
+        // has an address to advertise).
         wait_for_direct_address(&endpoint).await;
     } else {
         // Wait for endpoint to be online (connected to relay)
@@ -267,8 +269,9 @@ pub async fn create_sender_endpoint(relay_urls: Vec<String>, local_only: bool) -
 
 /// Wait until the endpoint has discovered at least one direct (IP) address.
 ///
-/// Used in local-only mode where there is no relay to fall back on. Gives up
-/// after a short timeout, in which case the receiver may simply need a moment
+/// Used in no-server mode where there is no relay to fall back on: the printed
+/// beam code embeds the discovered addresses, so we wait for at least one. Gives
+/// up after a short timeout, in which case the receiver may simply need a moment
 /// longer for mDNS to propagate.
 async fn wait_for_direct_address(endpoint: &Endpoint) {
     const ADDR_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -299,14 +302,15 @@ async fn wait_for_direct_address(endpoint: &Endpoint) {
 /// Does not set ALPN as the receiver specifies it when connecting.
 /// Multiple relay URLs provide automatic failover based on latency.
 ///
-/// When `local_only` is set, relays are disabled entirely and the sender is
-/// reached via mDNS — no internet or relay server is contacted.
+/// When `no_server` is set, relays are disabled entirely (no third-party server
+/// is contacted): the sender is reached via the direct addresses embedded in the
+/// beam code, with mDNS as a fallback.
 pub async fn create_receiver_endpoint(
     relay_urls: Vec<String>,
-    local_only: bool,
+    no_server: bool,
 ) -> Result<Endpoint> {
-    let relay_mode = if local_only {
-        eprintln!("Local-only mode (LAN direct, no relay)");
+    let relay_mode = if no_server {
+        eprintln!("No-server mode (direct connection, no relay)");
         RelayMode::Disabled
     } else {
         print_relay_info(&relay_urls);
@@ -340,7 +344,7 @@ pub async fn create_receiver_endpoint(
 /// ("Failed to read the system's DNS config, using fallback DNS servers")
 /// before falling back internally. On macOS the read can fail to parse a
 /// scoped nameserver entry, producing that warning on every bind — and it is
-/// not specific to local-only mode.
+/// not specific to no-server mode.
 ///
 /// To keep the system config when it is valid while avoiding the spurious
 /// warning, we probe the same `read_system_conf()` call iroh uses:
@@ -350,7 +354,7 @@ pub async fn create_receiver_endpoint(
 ///     same Google servers iroh would otherwise fall back to — so iroh never
 ///     reads the system config and never warns.
 ///
-/// In local-only mode DNS is never used (mDNS handles address lookup); in
+/// In no-server mode DNS is never used (mDNS handles address lookup); in
 /// relay mode this resolves relay hostnames and n0 discovery records. Note
 /// that `DnsResolver::builder().build()` alone yields a resolver with *no*
 /// nameservers (an empty `ResolverConfig::default()`), which is why the
@@ -377,13 +381,22 @@ fn beam_dns_resolver() -> DnsResolver {
 
 /// Create a MinimalAddr from a full EndpointAddr.
 ///
-/// Only the first (currently-selected) relay URL is kept to minimize token size;
-/// direct IP addresses are discovered at connect time via relay or mDNS.
-pub fn minimal_addr_from_endpoint(addr: &EndpointAddr) -> MinimalAddr {
+/// Only the first (currently-selected) relay URL is kept to minimize token size.
+/// IP addresses are normally stripped (they're discovered at connect time via
+/// relay or mDNS), but when `include_ip_addrs` is set — no-server mode — every
+/// direct address iroh discovered (LAN and any public/port-mapped addresses) is
+/// embedded so the receiver can attempt them all without relying on mDNS.
+pub fn minimal_addr_from_endpoint(addr: &EndpointAddr, include_ip_addrs: bool) -> MinimalAddr {
     let relay = addr.relay_urls().next().map(|r| r.to_string());
+    let ip_addrs = if include_ip_addrs {
+        addr.ip_addrs().map(|a| a.to_string()).collect()
+    } else {
+        Vec::new()
+    };
     MinimalAddr {
         id: addr.id.to_string(),
         relay,
+        ip_addrs,
     }
 }
 
@@ -400,16 +413,22 @@ pub fn minimal_addr_to_endpoint(addr: &MinimalAddr) -> Result<EndpointAddr> {
             .context("Failed to parse relay URL from beam code")?;
         endpoint_addr = endpoint_addr.with_relay_url(relay_url);
     }
+    for ip_str in &addr.ip_addrs {
+        let socket_addr = ip_str
+            .parse()
+            .with_context(|| format!("Failed to parse IP address from beam code: {ip_str}"))?;
+        endpoint_addr = endpoint_addr.with_ip_addr(socket_addr);
+    }
     Ok(endpoint_addr)
 }
 
 /// Generate a beam code from endpoint address
 /// Format: base64url(json(BeamToken))
 ///
-/// Local-only codes carry an endpoint ID without a relay URL; the receiver
-/// resolves it via mDNS.
-pub fn generate_code(addr: &EndpointAddr, key: &[u8; 32]) -> Result<String> {
-    let minimal_addr = minimal_addr_from_endpoint(addr);
+/// In `no_server` mode the endpoint's discovered direct addresses are embedded
+/// in the code so the receiver can connect without depending on mDNS resolution.
+pub fn generate_code(addr: &EndpointAddr, key: &[u8; 32], no_server: bool) -> Result<String> {
+    let minimal_addr = minimal_addr_from_endpoint(addr, no_server);
 
     let token = BeamToken {
         version: CURRENT_VERSION,
@@ -432,15 +451,34 @@ mod tests {
     use iroh::SecretKey;
 
     #[test]
-    fn generated_local_only_code_omits_direct_ip_addresses() {
+    fn no_server_code_embeds_direct_ip_addresses() {
         let key = [42u8; 32];
         let addr = EndpointAddr::new(SecretKey::generate().public())
             .with_ip_addr("192.168.1.10:4444".parse().unwrap());
 
-        let code = generate_code(&addr, &key).unwrap();
+        let code = generate_code(&addr, &key, true).unwrap();
         let token = parse_code(&code).unwrap();
-        let serialized = serde_json::to_value(&token.addr.unwrap()).unwrap();
+        let minimal_addr = token.addr.unwrap();
 
+        assert_eq!(minimal_addr.ip_addrs, vec!["192.168.1.10:4444".to_string()]);
+        // No-server codes carry no relay URL — that's how the receiver detects
+        // the mode.
+        assert!(minimal_addr.relay.is_none());
+    }
+
+    #[test]
+    fn relay_mode_code_omits_direct_ip_addresses() {
+        let key = [42u8; 32];
+        let addr = EndpointAddr::new(SecretKey::generate().public())
+            .with_ip_addr("192.168.1.10:4444".parse().unwrap());
+
+        let code = generate_code(&addr, &key, false).unwrap();
+        let token = parse_code(&code).unwrap();
+        let minimal_addr = token.addr.unwrap();
+
+        assert!(minimal_addr.ip_addrs.is_empty());
+        // The empty vec is skipped during serialization to keep tokens compact.
+        let serialized = serde_json::to_value(&minimal_addr).unwrap();
         assert!(serialized.get("ip_addrs").is_none());
     }
 }
