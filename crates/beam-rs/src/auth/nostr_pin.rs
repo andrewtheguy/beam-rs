@@ -51,7 +51,7 @@ use rand::RngCore;
 use tokio::time::Duration;
 
 use crate::auth::pin::{PIN_LENGTH, generate_pin};
-use crate::core::beam::SESSION_TTL_SECS;
+use beam_common::core::beam::SESSION_TTL_SECS;
 
 /// Result of fetching a beam code via PIN exchange.
 pub struct PinExchangeResult {
@@ -438,6 +438,7 @@ pub fn parse_pin_exchange_event(event: &Event) -> Result<(Vec<u8>, Vec<u8>)> {
 }
 
 /// Extract PIN hint from a PIN exchange event.
+#[allow(dead_code)] // retained helper; not currently called by the binary
 pub fn get_pin_hint(event: &Event) -> Option<String> {
     event
         .tags

@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-nostr = ["dep:nostr-sdk"]
 # Inline terminal UI. Optional so transports that don't use it (and downstream
 # binaries that opt out) don't pull in ratatui/crossterm.
 tui = ["dep:ratatui", "dep:crossterm", "dep:signal-hook"]
@@ -20,13 +19,9 @@ hex = { workspace = true }
 rand = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
-nostr-sdk = { workspace = true, optional = true }
 
 # Cryptography
 aes-gcm = "0.10"
-argon2 = "0.5"
-sha2 = "0.10"
-spake2 = "0.4"
 
 # File handling
 tempfile = { workspace = true }
@@ -36,10 +31,7 @@ walkdir = "2"
 fs4 = "0.12"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 
-# HTTP client for relay fetching
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
-
-# CLI (for PIN input)
+# CLI (interactive line prompts in the UI sink)
 rustyline = "15"
 crc32fast = "1.4"
 

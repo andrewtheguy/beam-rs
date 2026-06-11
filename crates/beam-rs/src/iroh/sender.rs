@@ -6,15 +6,15 @@ use tokio::sync::oneshot;
 
 use super::common::{IrohDuplex, create_sender_endpoint, generate_code, watch_connection_paths};
 use crate::cli::instructions::print_receiver_command;
-use beam_common::auth::PinInfo;
-use beam_common::auth::spake2::handshake_as_responder;
+use crate::auth::PinInfo;
+use crate::auth::spake2::handshake_as_responder;
 use beam_common::core::crypto::generate_key;
 use beam_common::ui::{self, Phase};
 use beam_common::core::transfer::{
     FileHeader, Interrupted, TransferResult, TransferType, run_sender_transfer, send_file_with,
     send_folder_with,
 };
-use beam_common::signaling::nostr_protocol::generate_transfer_id;
+use crate::signaling::nostr_protocol::generate_transfer_id;
 
 /// QUIC application close codes for connection termination.
 ///
@@ -126,7 +126,7 @@ async fn transfer_data_internal(
         let keys = nostr_sdk::Keys::generate();
         // Generate unique transfer ID to avoid collisions with concurrent transfers
         let transfer_id = generate_transfer_id();
-        let pin = beam_common::auth::nostr_pin::publish_beam_code_via_pin(
+        let pin = crate::auth::nostr_pin::publish_beam_code_via_pin(
             &keys,
             &code,
             &transfer_id,

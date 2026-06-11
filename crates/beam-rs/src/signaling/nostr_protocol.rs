@@ -1,3 +1,8 @@
+// This module is a NIP-65/NIP-66 relay-discovery toolkit. Only a subset is wired
+// into the binary today (e.g. `generate_transfer_id`); the rest is retained API
+// surface, so suppress dead-code warnings that only surface in a binary crate.
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use futures::future::join_all;
 use nostr_sdk::prelude::*;
@@ -5,7 +10,6 @@ use rand::Rng;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-// Re-export from auth::nostr_pin for backward compatibility
 pub use crate::auth::nostr_pin::DEFAULT_NOSTR_RELAYS;
 
 /// Nostr event kind for file transfer signaling (ephemeral range 20000-29999)
