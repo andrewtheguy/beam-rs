@@ -75,41 +75,6 @@ pub fn generate_pin() -> String {
     format!("{}{}", prefix, checksum)
 }
 
-/// Prompt user for PIN with checksum validation.
-///
-/// Loops on invalid PIN, pre-filling with the previous input so user can edit it.
-/// Returns the validated PIN or an error if input fails.
-pub fn prompt_pin() -> std::io::Result<String> {
-    use beam_common::ui::sink;
-
-    let mut last_input: Option<String> = None;
-
-    loop {
-        let (prompt, initial) = match &last_input {
-            Some(prev) => ("Enter corrected PIN: ", prev.as_str()),
-            None => ("Enter PIN: ", ""),
-        };
-
-        let line = sink()
-            .prompt_line(prompt, initial)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        let pin = line.trim().to_string();
-
-        if pin.is_empty() {
-            sink().info("PIN cannot be empty.");
-            continue;
-        }
-
-        if !validate_pin(&pin) {
-            sink().info("Invalid PIN format or checksum.");
-            last_input = Some(pin);
-            continue;
-        }
-
-        return Ok(pin);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

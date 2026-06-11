@@ -46,12 +46,13 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   # Sender (default iroh transport with PIN exchange)
   beam-rs send --pin /path/to/file
 
-  # Receiver (default iroh transport, prompts for PIN)
-  beam-rs receive --pin
+  # Receiver (default iroh transport; just run receive and enter the PIN)
+  beam-rs receive
   ```
 - **Experience**:
   1. Sender sees: `PIN: A1b2C3d4E5f6` (example)
-  2. Receiver runs the matching `receive --pin` command and types `A1b2C3d4E5f6`.
+  2. Receiver runs `receive` and enters `A1b2C3d4E5f6` at the prompt — the PIN is
+     auto-detected (vs. a full beam code) and resolved via Nostr.
 
 **Solution B**: **No-server Mode** (No third-party server)
 - **Why**: Contacts no relay or Nostr server (relays disabled); the sender embeds its discovered IPs in the beam code and the receiver connects directly, with mDNS as a fallback. Note this still requires moving the beam code between devices — handy when you can scan/share the code but want zero third-party involvement.

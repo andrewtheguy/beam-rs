@@ -58,9 +58,10 @@ enum Commands {
         no_server: bool,
     },
 
-    /// Receive a file or folder using a code
+    /// Receive a file or folder using a beam code or PIN
     Receive {
-        /// Beam code from sender (will prompt if not provided)
+        /// Beam code or PIN from sender (will prompt if not provided).
+        /// A 12-character PIN is auto-detected and resolved via Nostr.
         #[arg(short, long)]
         code: Option<String>,
 
@@ -71,10 +72,6 @@ enum Commands {
         /// Custom relay server URLs (for iroh transport)
         #[arg(long)]
         relay_url: Vec<String>,
-
-        /// Use PIN-based code exchange for Nostr (prompts for PIN input)
-        #[arg(long)]
-        pin: bool,
 
         /// Disable resumable transfers (don't save partial downloads)
         #[arg(long)]
@@ -199,6 +196,44 @@ fn init_tracing(discard: bool) {
     }
 }
 
+/// Prompt for a beam code or PIN, re-prompting on empty input.
+///
+/// Auto-detection happens at the call site via [`crate::auth::pin::validate_pin`].
+/// As a usability aid, an input that has the PIN length and uses only PIN
+/// characters but fails the checksum is treated as a mistyped PIN and re-prompted
+/// (pre-filled for editing) rather than silently falling through to be parsed as a
+/// beam code, which would produce a confusing "invalid code" error.
+fn prompt_code_or_pin() -> Result<String> {
+    use crate::auth::pin::{PIN_CHARSET, PIN_LENGTH, validate_pin};
+
+    let mut initial = String::new();
+    loop {
+        let input = ui::sink()
+            .prompt_line("Enter beam code or PIN: ", &initial)?
+            .trim()
+            .to_string();
+
+        if input.is_empty() {
+            ui::sink().info("Input cannot be empty.");
+            initial = String::new();
+            continue;
+        }
+
+        // Looks like a PIN attempt (right length, valid charset) but the checksum
+        // doesn't match — almost certainly a typo. Re-prompt instead of treating
+        // it as a beam code.
+        let looks_like_pin = input.len() == PIN_LENGTH
+            && input.bytes().all(|b| PIN_CHARSET.contains(&b));
+        if looks_like_pin && !validate_pin(&input) {
+            ui::sink().info("That looks like a PIN but the checksum is invalid — please re-check it.");
+            initial = input;
+            continue;
+        }
+
+        return Ok(input);
+    }
+}
+
 /// Dispatch the parsed CLI command.
 async fn run(command: Commands) -> Result<()> {
     match command {
@@ -230,25 +265,28 @@ async fn run(command: Commands) -> Result<()> {
         }
 
         Commands::Receive {
-            mut code,
+            code,
             output,
             relay_url,
-            pin,
             no_resume,
         } => {
             // Validate output directory if provided
             validate_output_dir(&output)?;
 
-            // Handle PIN mode if requested
-            let pin_info = if pin {
-                let pin_str = crate::auth::pin::prompt_pin()?;
+            // Get the input from the argument or prompt, then auto-detect whether
+            // it is a 12-character PIN (resolved via Nostr) or a full beam code.
+            let input = match code {
+                Some(c) => c.trim().to_string(),
+                None => prompt_code_or_pin()?,
+            };
 
+            let (code, pin_info) = if crate::auth::pin::validate_pin(&input) {
                 ui::sink().status("Searching for beam token via Nostr...");
 
-                // Fetch encrypted token from Nostr
+                // Fetch encrypted token from Nostr using the PIN.
                 let result = tokio::time::timeout(
                     std::time::Duration::from_secs(30),
-                    crate::auth::nostr_pin::fetch_beam_code_via_pin(&pin_str),
+                    crate::auth::nostr_pin::fetch_beam_code_via_pin(&input),
                 )
                 .await
                 .map_err(|_| {
@@ -257,16 +295,9 @@ async fn run(command: Commands) -> Result<()> {
                     )
                 })??;
                 ui::sink().status("Token found and decrypted!");
-                code = Some(result.code);
-                Some(PinInfo { pin: pin_str, transfer_id: result.transfer_id })
+                (result.code, Some(PinInfo { pin: input, transfer_id: result.transfer_id }))
             } else {
-                None
-            };
-
-            // Get code from argument or prompt
-            let code = match code {
-                Some(c) => c,
-                None => ui::sink().prompt_line("Enter beam code: ", "")?.trim().to_string(),
+                (input, None)
             };
 
             receive_with_code(&code, output, relay_url, no_resume, pin_info).await?;
