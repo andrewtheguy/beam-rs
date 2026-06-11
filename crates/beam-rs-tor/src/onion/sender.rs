@@ -16,6 +16,7 @@ use beam_common::core::transfer::{
     send_folder_with,
 };
 use beam_common::core::beam::generate_tor_code;
+use beam_common::ui::{self, Phase};
 
 /// Timeout for waiting for receiver to connect via Tor (10 minutes)
 /// Tor connections can be slow due to circuit building, so this is generous
@@ -26,8 +27,8 @@ const TOR_CONNECTION_TIMEOUT: Duration = Duration::from_secs(600);
 const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn print_receiver_command(command: &str) {
-    println!("On the receiving end, run:");
-    println!("  {}\n", command);
+    ui::sink().info("On the receiving end, run:");
+    ui::sink().info(&format!("  {}\n", command));
 }
 
 /// Internal helper for common Tor transfer logic.
@@ -39,6 +40,8 @@ async fn transfer_data_tor_internal(
     checksum: u64,
     transfer_type: TransferType,
 ) -> Result<()> {
+    ui::sink().set_phase(Phase::Preparing);
+
     // Always generate encryption key for application-layer encryption
     let key = generate_key();
 
@@ -50,12 +53,12 @@ async fn transfer_data_tor_internal(
     let state_dir = _temp_dir.path().join("state");
     let cache_dir = _temp_dir.path().join("cache");
 
-    eprintln!("Bootstrapping Tor client (ephemeral mode)...");
+    ui::sink().status("Bootstrapping Tor client (ephemeral mode)...");
 
     let config = TorClientConfigBuilder::from_directories(state_dir, cache_dir).build()?;
     let tor_client = TorClient::create_bootstrapped(config).await?;
 
-    eprintln!("Tor client bootstrapped!");
+    ui::sink().status("Tor client bootstrapped!");
 
     // Generate a random nickname for ephemeral service
     let random_suffix: u64 = rand::thread_rng().r#gen();
@@ -83,10 +86,11 @@ async fn transfer_data_tor_internal(
 
     print_receiver_command("beam-rs-tor receive");
 
-    println!("\nBeam code:\n{}\n", code);
-    println!("Then enter the code above when prompted.\n");
+    ui::sink().show_code(&code);
+    ui::sink().info("Then enter the code above when prompted.\n");
 
-    eprintln!("Waiting for receiver to connect via Tor...");
+    ui::sink().set_phase(Phase::Waiting);
+    ui::sink().status("Waiting for receiver to connect via Tor...");
 
     // Convert RendRequest stream to StreamRequest stream
     let mut stream_requests = handle_rend_requests(rend_requests);
@@ -98,10 +102,10 @@ async fn transfer_data_tor_internal(
             anyhow::bail!("No connection received (stream closed)");
         }
         Err(_) => {
-            eprintln!(
+            ui::sink().status(&format!(
                 "Timed out waiting for receiver after {:?}",
                 TOR_CONNECTION_TIMEOUT
-            );
+            ));
             anyhow::bail!(
                 "No receiver connected within {:?}. The beam code may have expired.",
                 TOR_CONNECTION_TIMEOUT
@@ -109,13 +113,15 @@ async fn transfer_data_tor_internal(
         }
     };
 
-    eprintln!("Receiver connected! Accepting stream...");
+    ui::sink().set_phase(Phase::Connecting);
+    ui::sink().status("Receiver connected! Accepting stream...");
 
     // Accept the stream request
     let mut stream = stream_req.accept(Connected::new_empty()).await?;
 
     // Create header and run unified transfer logic with 10s ACK timeout
     // Tor streams may close abruptly, so timeout is considered successful
+    ui::sink().set_phase(Phase::Transferring);
     let header = FileHeader::new(transfer_type, filename, file_size, checksum);
     let result = run_sender_transfer_with_timeout(
         &mut file,
@@ -130,7 +136,8 @@ async fn transfer_data_tor_internal(
         anyhow::bail!("Transfer cancelled by receiver");
     }
 
-    eprintln!("Done.");
+    ui::sink().set_phase(Phase::Done);
+    ui::sink().status("Done.");
 
     Ok(())
 }

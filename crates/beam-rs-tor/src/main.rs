@@ -1,11 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
 use beam_common::core::transfer::is_interrupted;
 use beam_common::core::beam;
+use beam_common::ui;
 
 mod onion;
 use onion::{receiver as onion_receiver, sender as onion_sender};
@@ -15,6 +15,11 @@ use onion::{receiver as onion_receiver, sender as onion_sender};
 #[command(about = "Secure anonymous file transfer via Tor hidden services")]
 #[command(version)]
 struct Cli {
+    /// Disable the interactive terminal UI and use plain line output.
+    /// The TUI is also auto-disabled when stdout/stderr is not a terminal.
+    #[arg(long, global = true)]
+    no_tui: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -96,6 +101,30 @@ fn main() {
 }
 
 async fn async_main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Start the inline TUI (if applicable) and install its sink. Honors
+    // --no-tui and the terminal auto-detect; returns None in plain mode (or if
+    // the inline viewport can't be initialized), leaving the plain sink in place.
+    let tui_handle = beam_common::tui::decide_and_install(cli.no_tui);
+
+    // Only discard tracing once the TUI is actually active — otherwise a failed
+    // TUI init would silently drop logs with no viewport to show status.
+    init_tracing(tui_handle.is_some());
+
+    let result = run(cli.command).await;
+
+    // Always restore the terminal before propagating the result/error.
+    if let Some(handle) = tui_handle {
+        handle.finish();
+    }
+
+    result
+}
+
+/// Set up the tracing subscriber. When `discard` is true (TUI mode) all log
+/// output is sent to a sink so it does not interfere with the inline viewport.
+fn init_tracing(discard: bool) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new("info")
             // Suppress noisy arti/tor internal logs
@@ -113,15 +142,21 @@ async fn async_main() -> Result<()> {
             .add_directive("tor_persist=off".parse().unwrap())
     });
 
-    tracing_subscriber::fmt()
+    let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
-        .without_time()
-        .init();
+        .without_time();
 
-    let cli = Cli::parse();
+    if discard {
+        builder.with_writer(std::io::sink).init();
+    } else {
+        builder.init();
+    }
+}
 
-    match cli.command {
+/// Dispatch the parsed CLI command.
+async fn run(command: Commands) -> Result<()> {
+    match command {
         Commands::Send { path, folder } => {
             validate_path(&path, folder)?;
             if folder {
@@ -136,13 +171,7 @@ async fn async_main() -> Result<()> {
 
             let code = match code {
                 Some(c) => c,
-                None => {
-                    print!("Enter beam code: ");
-                    io::stdout().flush()?;
-                    let mut input = String::new();
-                    io::stdin().read_line(&mut input)?;
-                    input.trim().to_string()
-                }
+                None => ui::sink().prompt_line("Enter beam code: ", "")?.trim().to_string(),
             };
 
             beam::validate_code_format(&code)?;

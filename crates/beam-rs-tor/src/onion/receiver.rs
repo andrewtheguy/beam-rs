@@ -6,6 +6,7 @@ use tokio::time::timeout;
 
 use beam_common::core::transfer::run_receiver_transfer;
 use beam_common::core::beam::{PROTOCOL_TOR, decode_key, parse_code};
+use beam_common::ui::{self, Phase};
 
 const MAX_RETRIES: u32 = 5;
 const RETRY_DELAY_SECS: u64 = 5;
@@ -21,10 +22,10 @@ fn get_transfer_timeout() -> Duration {
         Ok(val) => match val.parse::<u64>() {
             Ok(secs) => Duration::from_secs(secs),
             Err(_) => {
-                eprintln!(
+                ui::sink().status(&format!(
                     "Warning: invalid BEAM_TRANSFER_TIMEOUT_SECS='{}', using default {}s",
                     val, DEFAULT_TRANSFER_TIMEOUT_SECS
-                );
+                ));
                 Duration::from_secs(DEFAULT_TRANSFER_TIMEOUT_SECS)
             }
         },
@@ -45,7 +46,8 @@ fn is_retryable(e: &arti_client::Error) -> bool {
 
 /// Receive a file via Tor hidden service
 pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result<()> {
-    eprintln!("Parsing beam code...");
+    ui::sink().set_phase(Phase::Connecting);
+    ui::sink().status("Parsing beam code...");
 
     // Parse the beam code
     let token = parse_code(code).context("Failed to parse beam code")?;
@@ -64,7 +66,7 @@ pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result
         .onion_address
         .context("No onion address in beam code")?;
 
-    eprintln!("Code valid. Connecting to sender via Tor...");
+    ui::sink().status("Code valid. Connecting to sender via Tor...");
 
     // Bootstrap Tor client (ephemeral mode - allows multiple concurrent receivers)
     // IMPORTANT: _temp_dir must remain in scope for the lifetime of tor_client.
@@ -75,7 +77,7 @@ pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result
     let state_dir = _temp_dir.path().join("state");
     let cache_dir = _temp_dir.path().join("cache");
 
-    eprintln!("Bootstrapping Tor client (ephemeral mode)...");
+    ui::sink().status("Bootstrapping Tor client (ephemeral mode)...");
 
     let config = TorClientConfigBuilder::from_directories(state_dir, cache_dir)
         .build()
@@ -83,17 +85,17 @@ pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result
     let tor_client = TorClient::create_bootstrapped(config)
         .await
         .context("Failed to bootstrap Tor client")?;
-    eprintln!("Tor client bootstrapped!");
+    ui::sink().status("Tor client bootstrapped!");
 
     // Retry connection for temporary errors
     let mut stream = None;
     let mut last_error = None;
 
     for attempt in 1..=MAX_RETRIES {
-        eprintln!(
+        ui::sink().status(&format!(
             "Connecting to {} (attempt {}/{})...",
             onion_addr, attempt, MAX_RETRIES
-        );
+        ));
 
         match tor_client.connect((onion_addr.as_str(), 80)).await {
             Ok(s) => {
@@ -101,7 +103,7 @@ pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result
                 break;
             }
             Err(e) => {
-                eprintln!("Connection failed: {}", e);
+                ui::sink().status(&format!("Connection failed: {}", e));
 
                 if !is_retryable(&e) {
                     return Err(e.into());
@@ -109,7 +111,7 @@ pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result
 
                 last_error = Some(e);
                 if attempt < MAX_RETRIES {
-                    eprintln!("Retrying in {} seconds...", RETRY_DELAY_SECS);
+                    ui::sink().status(&format!("Retrying in {} seconds...", RETRY_DELAY_SECS));
                     tokio::time::sleep(tokio::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
                 }
             }
@@ -124,10 +126,11 @@ pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result
         )
     })?;
 
-    eprintln!("Connected!");
+    ui::sink().status("Connected!");
 
     // Run unified receiver transfer with timeout (no resume for Tor receiver by default)
     // Stream is dropped when function returns or on timeout; no explicit close needed for Tor streams
+    ui::sink().set_phase(Phase::Transferring);
     let transfer_timeout = get_transfer_timeout();
     let transfer_result = timeout(
         transfer_timeout,
@@ -137,7 +140,8 @@ pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result
 
     match transfer_result {
         Ok(Ok((_path, _stream))) => {
-            eprintln!("Transfer complete.");
+            ui::sink().set_phase(Phase::Done);
+            ui::sink().status("Transfer complete.");
             Ok(())
         }
         Ok(Err(e)) => {
@@ -146,7 +150,7 @@ pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result
         }
         Err(_elapsed) => {
             // Timeout elapsed - stream is dropped here, cleaning up the connection
-            eprintln!("Transfer timed out after {:?}", transfer_timeout);
+            ui::sink().status(&format!("Transfer timed out after {:?}", transfer_timeout));
             anyhow::bail!(
                 "Transfer timed out after {:?}. You can increase the timeout by setting \
                  BEAM_TRANSFER_TIMEOUT_SECS environment variable.",
