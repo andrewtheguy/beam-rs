@@ -518,11 +518,10 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "beam-common"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "aes-gcm",
  "anyhow",
- "argon2",
  "base64",
  "crc32fast",
  "crossterm",
@@ -530,16 +529,12 @@ dependencies = [
  "futures",
  "hex",
  "log",
- "nostr-sdk",
  "rand 0.8.6",
  "ratatui",
- "reqwest 0.12.28",
  "rustyline",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "signal-hook",
- "spake2",
  "tar",
  "tempfile",
  "tokio",
@@ -550,9 +545,11 @@ dependencies = [
 
 [[package]]
 name = "beam-rs"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
+ "aes-gcm",
  "anyhow",
+ "argon2",
  "base64",
  "beam-common",
  "clap",
@@ -564,8 +561,10 @@ dependencies = [
  "log",
  "nostr-sdk",
  "rand 0.8.6",
+ "reqwest 0.12.28",
  "rustls",
  "serde_json",
+ "spake2",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -574,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "beam-rs-tor"
-version = "0.0.13"
+version = "0.0.14"
 dependencies = [
  "anyhow",
  "arti-client",

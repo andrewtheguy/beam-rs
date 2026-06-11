@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Common library
-beam-common = { path = "../beam-common", features = ["nostr", "tui"] }
+beam-common = { path = "../beam-common", features = ["tui"] }
 
 # Core dependencies (workspace)
 tokio = { workspace = true }
@@ -24,6 +24,13 @@ futures = { workspace = true }
 log = { workspace = true }
 nostr-sdk = { workspace = true }
 tempfile = { workspace = true }
+
+# PIN-based Nostr exchange / SPAKE2 handshake (iroh-only, moved from beam-common)
+aes-gcm = "0.10"
+argon2 = "0.5"
+spake2 = "0.4"
+# HTTP client for Nostr relay fetching
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
 
 # iroh transport
 iroh = "1.0.0-rc.1"

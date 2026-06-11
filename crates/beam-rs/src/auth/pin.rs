@@ -80,7 +80,7 @@ pub fn generate_pin() -> String {
 /// Loops on invalid PIN, pre-filling with the previous input so user can edit it.
 /// Returns the validated PIN or an error if input fails.
 pub fn prompt_pin() -> std::io::Result<String> {
-    use crate::ui::sink;
+    use beam_common::ui::sink;
 
     let mut last_input: Option<String> = None;
 

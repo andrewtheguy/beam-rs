@@ -10,8 +10,8 @@ use super::common::{
     ALPN, OwnedIrohDuplex, create_receiver_endpoint, minimal_addr_to_endpoint,
     watch_connection_paths,
 };
-use beam_common::auth::PinInfo;
-use beam_common::auth::spake2::handshake_as_initiator;
+use crate::auth::PinInfo;
+use crate::auth::spake2::handshake_as_initiator;
 use beam_common::core::transfer::run_receiver_transfer;
 use beam_common::core::beam::parse_code;
 use beam_common::ui::{self, Phase};

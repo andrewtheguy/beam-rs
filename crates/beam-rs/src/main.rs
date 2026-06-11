@@ -3,10 +3,13 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
-use beam_common::auth::PinInfo;
 use beam_common::core::transfer::is_interrupted;
 use beam_common::core::beam;
 use beam_common::ui;
+
+mod auth;
+mod signaling;
+use auth::PinInfo;
 
 mod iroh;
 use iroh::{receiver as iroh_receiver, sender as iroh_sender};
@@ -228,14 +231,14 @@ async fn run(command: Commands) -> Result<()> {
 
             // Handle PIN mode if requested
             let pin_info = if pin {
-                let pin_str = beam_common::auth::pin::prompt_pin()?;
+                let pin_str = crate::auth::pin::prompt_pin()?;
 
                 ui::sink().status("Searching for beam token via Nostr...");
 
                 // Fetch encrypted token from Nostr
                 let result = tokio::time::timeout(
                     std::time::Duration::from_secs(30),
-                    beam_common::auth::nostr_pin::fetch_beam_code_via_pin(&pin_str),
+                    crate::auth::nostr_pin::fetch_beam_code_via_pin(&pin_str),
                 )
                 .await
                 .map_err(|_| {

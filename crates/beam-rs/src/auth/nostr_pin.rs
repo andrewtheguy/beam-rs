@@ -9,20 +9,35 @@
 //!
 //! ## PIN Hint Design
 //!
-//! The PIN hint is `SHA-256(PIN || time_bucket)[0..16]` — a 128-bit value that rotates
-//! every hour. This design prevents relay operators from correlating PIN usage across
-//! time windows, since the same PIN produces a different hint each hour.
+//! The PIN hint is `Argon2id(PIN, salt = PIN_HINT_SALT || time_bucket)[0..16]` — a
+//! 128-bit value that rotates every hour. It is published on the relay as a filter tag
+//! so a receiver can locate the matching event without revealing the PIN. This design
+//! prevents relay operators from correlating PIN usage across time windows, since the
+//! same PIN produces a different hint each hour.
+//!
+//! Both the sender and receiver must derive the hint from the PIN alone (the receiver
+//! has no other shared secret before it queries), so the hint cannot use the per-event
+//! random Argon2id salt that protects the ciphertext. Instead it is **salted** with a
+//! fixed, non-secret application constant (`PIN_HINT_SALT`) concatenated with the time
+//! bucket, and **stretched** with the same Argon2id cost parameters used for key
+//! derivation. The salt provides domain separation and defeats precomputed/cross-app
+//! rainbow tables; the stretch makes each brute-force guess expensive.
 //!
 //! - **Time-based rotation**: Hint changes every hour (1-hour bucket size)
 //! - **Ephemeral nature**: Events expire after 2 hours (2x bucket for boundary padding)
-//! - **Strong PIN entropy**: 12-char PIN has ~65 bits of entropy
-//! - **One-way hash**: SHA-256 cannot be reversed; attacker must brute-force 2^65 hashes
-//! - **Argon2id protection**: Even with PIN, attacker needs per-event salt + expensive KDF
+//! - **PIN entropy**: The PIN is 12 characters — 11 random characters drawn from a
+//!   60-character unambiguous set plus 1 deterministic checksum character. The 11 random
+//!   characters give `60^11 ≈ 2^65` (~65 bits) of entropy; the checksum adds none.
+//! - **Salted + stretched**: An attacker holding the public hint must run Argon2id
+//!   (64 MiB, t=3) once per candidate PIN, so brute-forcing the ~2^65 space is
+//!   computationally infeasible. The fixed salt blocks precomputation.
+//! - **Per-event KDF for the ciphertext**: Recovering the beam code additionally needs
+//!   the per-event random salt plus another expensive Argon2id derivation.
 //! - **Single-use**: Each transfer generates a new PIN, no rainbow table benefit
 //!
 //! The receiver queries with hints for both the current and previous time bucket to
 //! handle transitions at bucket boundaries. The 128-bit hint provides high filtering
-//! precision while the PIN's entropy and Argon2id KDF provide the actual security.
+//! precision while the PIN's entropy and Argon2id stretching provide the actual security.
 
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
@@ -33,11 +48,10 @@ use argon2::{Argon2, Params, Version};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use nostr_sdk::prelude::*;
 use rand::RngCore;
-use sha2::{Digest, Sha256};
 use tokio::time::Duration;
 
 use crate::auth::pin::{PIN_LENGTH, generate_pin};
-use crate::core::beam::SESSION_TTL_SECS;
+use beam_common::core::beam::SESSION_TTL_SECS;
 
 /// Result of fetching a beam code via PIN exchange.
 pub struct PinExchangeResult {
@@ -63,6 +77,19 @@ pub const PIN_EXCHANGE_KIND: u16 = 24243;
 
 /// Salt length for Argon2id
 pub const ARGON2_SALT_LEN: usize = 16;
+
+/// PIN hint length in bytes (128 bits = 32 hex chars).
+const PIN_HINT_LEN: usize = 16;
+
+/// Fixed, non-secret application salt for PIN-hint derivation.
+///
+/// The hint must be derivable from the PIN alone (the receiver shares no other secret
+/// before it queries), so it cannot use the per-event random salt that protects the
+/// ciphertext. This constant is concatenated with the time bucket to form the Argon2id
+/// salt: the bucket rotates the hint hourly, and the constant provides domain separation
+/// and defeats precomputed/cross-application rainbow tables. It is NOT secret — the
+/// security comes from the PIN entropy and the Argon2id stretch.
+const PIN_HINT_SALT: &[u8] = b"beam-rs:nostr-pin-hint:v1";
 
 /// AES-GCM nonce length
 const AES_NONCE_LEN: usize = 12;
@@ -174,20 +201,33 @@ fn current_time_bucket() -> u64 {
 
 /// Compute PIN hint for a specific time bucket.
 ///
-/// Returns 128 bits (16 bytes = 32 hex chars) of `SHA-256(PIN || bucket)`.
+/// The hint is `Argon2id(PIN, salt = PIN_HINT_SALT || bucket)[0..16]` — 128 bits
+/// (16 bytes = 32 hex chars). The PIN is salted with a fixed application constant plus
+/// the time bucket and stretched with Argon2id so that an attacker holding the public
+/// hint must pay the full KDF cost per candidate PIN. See module docs for the rationale.
 fn compute_pin_hint_for_bucket(pin: &str, bucket: u64) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(pin.as_bytes());
-    hasher.update(bucket.to_be_bytes());
-    let hash = hasher.finalize();
-    hex::encode(&hash[..16]) // 128 bits = 32 hex chars
+    // Salt = fixed application salt || time bucket. The bucket rotates the hint hourly;
+    // the constant provides domain separation and blocks precomputed tables.
+    let mut salt = Vec::with_capacity(PIN_HINT_SALT.len() + 8);
+    salt.extend_from_slice(PIN_HINT_SALT);
+    salt.extend_from_slice(&bucket.to_be_bytes());
+
+    let argon2 =
+        argon2id_instance(PIN_HINT_LEN).expect("static Argon2 hint params are always valid");
+
+    let mut hint = [0u8; PIN_HINT_LEN];
+    argon2
+        .hash_password_into(pin.as_bytes(), &salt, &mut hint)
+        .expect("Argon2 hint derivation failed");
+
+    hex::encode(hint) // 128 bits = 32 hex chars
 }
 
 /// Compute PIN hint for the current time bucket (used by sender).
 ///
-/// The hint is `SHA-256(PIN || time_bucket)[0..16]` — a 128-bit value that rotates
-/// every hour, preventing relay operators from correlating PIN usage across time
-/// windows. See module docs for full security analysis.
+/// The hint is `Argon2id(PIN, salt = PIN_HINT_SALT || time_bucket)[0..16]` — a 128-bit
+/// value that rotates every hour, preventing relay operators from correlating PIN usage
+/// across time windows. See module docs for full security analysis.
 pub fn compute_pin_hint(pin: &str) -> String {
     compute_pin_hint_for_bucket(pin, current_time_bucket())
 }
@@ -205,17 +245,29 @@ pub fn compute_pin_hints_for_lookup(pin: &str) -> Vec<String> {
     ]
 }
 
-/// Derive a 256-bit key from PIN using Argon2id.
-pub fn derive_key_from_pin(pin: &str, salt: &[u8]) -> Result<[u8; 32]> {
+/// Build an Argon2id instance with the shared cost parameters and a given output length.
+///
+/// The same `(memory, time, parallelism)` cost is used for both the ciphertext key
+/// (32-byte output) and the PIN hint (16-byte output); only the output length differs.
+fn argon2id_instance(output_len: usize) -> Result<Argon2<'static>> {
     let params = Params::new(
         ARGON2_MEMORY_COST,
         ARGON2_TIME_COST,
         ARGON2_PARALLELISM,
-        Some(32),
+        Some(output_len),
     )
     .map_err(|e| anyhow::anyhow!("Failed to create Argon2 params: {}", e))?;
 
-    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
+    Ok(Argon2::new(
+        argon2::Algorithm::Argon2id,
+        Version::V0x13,
+        params,
+    ))
+}
+
+/// Derive a 256-bit key from PIN using Argon2id.
+pub fn derive_key_from_pin(pin: &str, salt: &[u8]) -> Result<[u8; 32]> {
+    let argon2 = argon2id_instance(32)?;
 
     let mut output = [0u8; 32];
     argon2
@@ -386,6 +438,7 @@ pub fn parse_pin_exchange_event(event: &Event) -> Result<(Vec<u8>, Vec<u8>)> {
 }
 
 /// Extract PIN hint from a PIN exchange event.
+#[allow(dead_code)] // retained helper; not currently called by the binary
 pub fn get_pin_hint(event: &Event) -> Option<String> {
     event
         .tags
