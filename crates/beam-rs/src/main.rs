@@ -139,6 +139,13 @@ fn main() {
 }
 
 async fn async_main() -> Result<()> {
+    // Install the process-level rustls CryptoProvider. The iroh transport passes
+    // its own provider explicitly, but the Nostr relay path (WebSocket TLS) relies
+    // on rustls' global default, which newer rustls versions no longer auto-select.
+    // Without this, `--pin` panics with "Could not automatically determine the
+    // process-level CryptoProvider". Ignore the error if one is already installed.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
 
     // Start the inline TUI (if applicable) and install its sink. Honors
