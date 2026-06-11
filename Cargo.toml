@@ -26,12 +26,11 @@ log = "0.4"
 # File handling
 tempfile = "3"
 
-# Nostr signaling
-nostr-sdk = "0.44.1"
-
-# CLI
+# CLI (shared by the binary crates)
 clap = { version = "4", features = ["derive"] }
-env_logger = "0.11"
+
+# Tracing (shared by the binary crates)
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
 strip = true

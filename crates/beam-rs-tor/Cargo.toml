@@ -16,15 +16,15 @@ beam-common = { path = "../beam-common", features = ["tui"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 anyhow = { workspace = true }
-clap = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
 tempfile = { workspace = true }
+clap = { workspace = true }
 
-# Crate-specific dependencies
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Tracing
+tracing-subscriber = { workspace = true }
 
 # Tor/Onion transport
 arti-client = { version = "0.43", features = ["onion-service-service", "onion-service-client", "tokio", "static-sqlite"] }
