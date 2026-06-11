@@ -418,11 +418,6 @@ pub fn generate_code(addr: &EndpointAddr, key: &[u8; 32]) -> Result<String> {
         key: URL_SAFE_NO_PAD.encode(key),
         addr: Some(minimal_addr),
         onion_address: None,
-        webrtc_sender_pubkey: None,
-        webrtc_transfer_id: None,
-        webrtc_relays: None,
-        webrtc_transfer_type: None,
-        webrtc_filename: None,
     };
 
     let serialized = serde_json::to_vec(&token).context("Failed to serialize beam token")?;

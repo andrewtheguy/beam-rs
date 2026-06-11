@@ -14,9 +14,6 @@ pub const PROTOCOL_IROH: &str = "iroh";
 /// Protocol identifier for tor transport
 pub const PROTOCOL_TOR: &str = "tor";
 
-/// Protocol identifier for webrtc transport (WebRTC + Nostr signaling)
-pub const PROTOCOL_WEBRTC: &str = "webrtc";
-
 /// Minimum base64url-encoded beam code length.
 /// A minimal token payload is ~20+ bytes, which base64 encodes to ~30+ characters.
 const MIN_CODE_LENGTH: usize = 30;
@@ -75,11 +72,11 @@ pub struct MinimalAddr {
 pub struct BeamToken {
     /// Token format version (for future compatibility checks)
     pub version: u8,
-    /// Protocol identifier (e.g., "iroh", "tor", "webrtc")
+    /// Protocol identifier (e.g., "iroh", "tor")
     pub protocol: String,
     /// Unix timestamp when this token was created (for TTL validation)
     pub created_at: u64,
-    /// AES-256-GCM key as base64 string (always present for iroh/tor/webrtc)
+    /// AES-256-GCM key as base64 string (always present for iroh/tor)
     pub key: String,
     /// Minimal endpoint address for connection (None for non-iroh transports)
     /// Contains only node ID and relay URL
@@ -90,23 +87,6 @@ pub struct BeamToken {
     /// Onion address for Tor hidden service (e.g., "abc123...xyz.onion")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub onion_address: Option<String>,
-
-    // WebRTC-specific fields:
-    /// Sender's ephemeral Nostr public key for signaling (hex)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub webrtc_sender_pubkey: Option<String>,
-    /// Unique transfer session ID
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub webrtc_transfer_id: Option<String>,
-    /// List of Nostr relay URLs for signaling
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub webrtc_relays: Option<Vec<String>>,
-    /// Transfer type: "file" or "folder"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub webrtc_transfer_type: Option<String>,
-    /// Original filename for webrtc transfers
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub webrtc_filename: Option<String>,
 }
 
 /// Get current Unix timestamp in seconds
@@ -138,96 +118,6 @@ pub fn generate_tor_code(onion_address: String, key: &[u8; 32]) -> Result<String
         key: URL_SAFE_NO_PAD.encode(key),
         addr: None,
         onion_address: Some(onion_address),
-        webrtc_sender_pubkey: None,
-        webrtc_transfer_id: None,
-        webrtc_relays: None,
-        webrtc_transfer_type: None,
-        webrtc_filename: None,
-    };
-
-    let serialized = serde_json::to_vec(&token).context("Failed to serialize beam token")?;
-
-    Ok(URL_SAFE_NO_PAD.encode(&serialized))
-}
-
-/// Generate a beam code for webrtc transfer (WebRTC + Nostr signaling)
-/// Format: base64url(json(BeamToken))
-///
-/// # Arguments
-/// * `key` - The AES-256-GCM encryption key (always required for webrtc)
-/// * `sender_pubkey` - Sender's ephemeral Nostr public key for signaling (hex)
-/// * `transfer_id` - Unique transfer session ID
-/// * `relays` - List of Nostr relay URLs for signaling
-/// * `filename` - Original filename
-/// * `transfer_type` - "file" or "folder"
-///
-/// # Errors
-///
-/// Returns an error if `transfer_type` is not "file" or "folder".
-pub fn generate_webrtc_code(
-    key: &[u8; 32],
-    sender_pubkey: String,
-    transfer_id: String,
-    relays: Option<Vec<String>>,
-    filename: String,
-    transfer_type: &str,
-) -> Result<String> {
-    // Validate transfer_type early to fail fast
-    if transfer_type != "file" && transfer_type != "folder" {
-        anyhow::bail!(
-            "Invalid transfer_type: '{}' (expected 'file' or 'folder')",
-            transfer_type
-        );
-    }
-
-    // Validate sender_pubkey format (Nostr x-only Schnorr pubkey: 32 bytes = 64 hex chars)
-    if sender_pubkey.len() != 64 || !sender_pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
-        anyhow::bail!(
-            "Invalid sender_pubkey: expected 64-character hex string (32-byte Nostr pubkey), got {} chars",
-            sender_pubkey.len()
-        );
-    }
-
-    // Validate transfer_id is non-empty
-    if transfer_id.trim().is_empty() {
-        anyhow::bail!("Invalid transfer_id: cannot be empty");
-    }
-
-    // Validate filename is non-empty and doesn't contain path separators
-    if filename.trim().is_empty() {
-        anyhow::bail!("Invalid filename: cannot be empty");
-    }
-    if filename.contains('/') || filename.contains('\\') {
-        anyhow::bail!("Invalid filename: cannot contain path separators");
-    }
-
-    // Validate relay URLs if provided
-    if let Some(ref relay_list) = relays {
-        if relay_list.is_empty() {
-            anyhow::bail!("Invalid relays: list cannot be empty if provided");
-        }
-        for relay in relay_list {
-            if !relay.starts_with("ws://") && !relay.starts_with("wss://") {
-                anyhow::bail!(
-                    "Invalid relay URL '{}': must start with ws:// or wss://",
-                    relay
-                );
-            }
-        }
-    }
-
-    let token = BeamToken {
-        version: CURRENT_VERSION,
-        protocol: PROTOCOL_WEBRTC.to_string(),
-        created_at: current_timestamp(),
-        key: URL_SAFE_NO_PAD.encode(key),
-        addr: None,
-        onion_address: None,
-        webrtc_sender_pubkey: Some(sender_pubkey),
-        webrtc_transfer_id: Some(transfer_id),
-        webrtc_relays: relays,
-        webrtc_transfer_type: Some(transfer_type.to_string()),
-        webrtc_filename: Some(filename),
     };
 
     let serialized = serde_json::to_vec(&token).context("Failed to serialize beam token")?;
@@ -291,16 +181,12 @@ pub fn parse_code(code: &str) -> Result<BeamToken> {
     }
 
     // Validate protocol
-    if token.protocol != PROTOCOL_IROH
-        && token.protocol != PROTOCOL_TOR
-        && token.protocol != PROTOCOL_WEBRTC
-    {
+    if token.protocol != PROTOCOL_IROH && token.protocol != PROTOCOL_TOR {
         anyhow::bail!(
-            "Invalid protocol '{}'. Supported protocols: '{}', '{}', '{}'",
+            "Invalid protocol '{}'. Supported protocols: '{}', '{}'",
             token.protocol,
             PROTOCOL_IROH,
-            PROTOCOL_TOR,
-            PROTOCOL_WEBRTC
+            PROTOCOL_TOR
         );
     }
 
@@ -343,31 +229,6 @@ pub fn parse_code(code: &str) -> Result<BeamToken> {
             None => anyhow::bail!("Invalid tor token: missing onion address"),
             Some(addr) => {
                 validate_onion_address(addr).context("Invalid tor token")?;
-            }
-        }
-    }
-
-    // For webrtc protocol, ensure webrtc fields are present and valid
-    if token.protocol == PROTOCOL_WEBRTC {
-        if token.webrtc_sender_pubkey.is_none() {
-            anyhow::bail!("Invalid webrtc token: missing sender pubkey");
-        }
-        if token.webrtc_transfer_id.is_none() {
-            anyhow::bail!("Invalid webrtc token: missing transfer ID");
-        }
-        if token.webrtc_filename.is_none() {
-            anyhow::bail!("Invalid webrtc token: missing filename");
-        }
-        match token.webrtc_transfer_type.as_deref() {
-            Some("file") | Some("folder") => {}
-            Some(invalid) => {
-                anyhow::bail!(
-                    "Invalid webrtc token: unsupported transfer type '{}' (expected 'file' or 'folder')",
-                    invalid
-                );
-            }
-            None => {
-                anyhow::bail!("Invalid webrtc token: missing transfer type");
             }
         }
     }

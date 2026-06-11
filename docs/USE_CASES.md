@@ -3,9 +3,9 @@
 This guide describes common scenarios where `beam-rs` shines and which mode to use for each.
 
 ## 1. No Internet Access (LAN / Air-gapped)
-**Scenario**: You need to transfer files without using the public internet: either both machines are on the same LAN, or they can still reach each other over a private/routed network while you copy/paste signaling text out-of-band.
+**Scenario**: You need to transfer files without using the public internet, with both machines on the same LAN.
 
-**Solution A**: **Local-only Mode** (`beam-rs send --local-only`)
+**Solution**: **Local-only Mode** (`beam-rs send --local-only`)
 - **Why**: Same iroh transport as the default mode, but with relays disabled. The receiver resolves the sender on the LAN with mDNS and connects directly, so no data leaves your local network and no relay/internet is contacted.
 - **Command**:
   ```bash
@@ -16,18 +16,6 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   beam-rs receive --code <BEAM_CODE>
   ```
 - **Experience**: The sender prints a beam code once it has a local address. Share the code out-of-band; the receiver auto-detects local-only mode from the code (no relay URL) and connects directly.
-
-**Solution B**: **WebRTC Manual Mode** (`beam-rs-webrtc send-manual` / `receive-manual`)  
-- **Why**: Works when mDNS is blocked and peers still have direct IP reachability (same LAN or routed private/VPN network). No Nostr relay required.
-- **Command**:
-  ```bash
-  # Sender
-  beam-rs-webrtc send-manual /path/to/file
-
-  # Receiver
-  beam-rs-webrtc receive-manual
-  ```
-- **Experience**: Sender copy/pastes an offer code, receiver replies with an answer code. The exchanged text includes signaling metadata and the encryption key, so use a secure channel.
 
 ---
 
@@ -52,7 +40,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 **Scenario**: You are sending a file from a laptop to a friend's phone, or to a remote server console where you cannot easily copy and paste the long "Beam Code". Typing a huge base64 string is impossible.
 
 **Solution A**: **PIN Mode** (Recommended when copy-paste is hard)
-- **Why**: Uses a short 12-character PIN instead of a long code. The PIN is exchanged via Nostr relays, while the actual file transfer uses either default iroh or default WebRTC transport. Requires internet for the Nostr exchange.
+- **Why**: Uses a short 12-character PIN instead of a long code. The PIN is exchanged via Nostr relays, while the actual file transfer uses the default iroh transport. Requires internet for the Nostr exchange.
 - **Command**:
   ```bash
   # Sender (default iroh transport with PIN exchange)
@@ -60,10 +48,6 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 
   # Receiver (default iroh transport, prompts for PIN)
   beam-rs receive --pin
-
-  # Or use default WebRTC transport with PIN exchange
-  beam-rs-webrtc send --pin /path/to/file
-  beam-rs-webrtc receive --pin
   ```
 - **Experience**:
   1. Sender sees: `PIN: A1b2C3d4E5f6` (example)
@@ -147,9 +131,3 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 ## 8. Planned / Future Scenarios
 
 See [ROADMAP.md](ROADMAP.md) for planned features and development priorities.
-
----
-
-## WebRTC Mode
-
-WebRTC mode provides P2P transfers with Nostr signaling for NAT traversal, plus a manual copy/paste path for relay-blocked environments where peers are still directly reachable. See [main README](../README.md#3-webrtc-mode---beam-rs-webrtc-send) for usage details.

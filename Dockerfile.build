@@ -15,15 +15,11 @@ COPY crates ./crates
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-${TARGETPLATFORM} \
     --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git-${TARGETPLATFORM} \
     --mount=type=cache,target=/build/target,id=cargo-target-${TARGETPLATFORM} \
-    cargo build --release --all-features -p beam-rs -p beam-rs-webrtc -p beam-rs-local -p beam-rs-tor && \
+    cargo build --release --all-features -p beam-rs -p beam-rs-tor && \
     cp target/release/beam-rs /beam-rs && \
-    cp target/release/beam-rs-webrtc /beam-rs-webrtc && \
-    cp target/release/beam-rs-local /beam-rs-local && \
     cp target/release/beam-rs-tor /beam-rs-tor
 
 # Export stage - only contains the binaries
 FROM scratch AS export
 COPY --from=builder /beam-rs /beam-rs
-COPY --from=builder /beam-rs-webrtc /beam-rs-webrtc
-COPY --from=builder /beam-rs-local /beam-rs-local
 COPY --from=builder /beam-rs-tor /beam-rs-tor

@@ -9,7 +9,6 @@ beam-rs supports two main categories of transport:
 1. **Internet Transfers** (beam code based):
     - **iroh Mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`
     - **Tor Mode**: Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs-tor send`
-    - **WebRTC Mode**: Direct P2P via WebRTC DataChannels with Nostr signaling via `beam-rs-webrtc send`
 2. **Local Transfers** (using `beam-rs send --local-only`):
     - **Local-only Mode**: LAN-only transfers using the iroh QUIC/TLS stack with relays disabled; the sender is discovered by mDNS and connected to directly. Uses the same beam code format as iroh mode.
 
@@ -132,108 +131,6 @@ sequenceDiagram
     Receiver->>Sender: 9. Send Encrypted ACK
 ```
 
-### 3. WebRTC Transfers
-
-#### Default WebRTC Mode
-
-```mermaid
-sequenceDiagram
-    participant Sender
-    participant Nostr as Nostr Relays
-    participant Receiver
-
-    Sender->>Sender: 1. Create RTCPeerConnection + data channel
-    Sender->>Sender: 2. Create SDP offer
-    Sender->>Nostr: 3. Connect & Subscribe
-    Sender->>Nostr: 4. Publish Offer (SDP)
-
-    Note over Sender: Display beam code (transfer-id, pubkey, relays, AES key)
-    Note over Sender: Gathering ICE candidates...
-
-    Sender-->>Nostr: (async) Publish ICE candidates as gathered
-
-    Receiver->>Nostr: 5. Connect & Subscribe (using beam code)
-    Nostr->>Receiver: 6. Receive Offer (SDP)
-    Nostr-->>Receiver: (async) Receive Sender's ICE candidates
-
-    Receiver->>Receiver: 7. Create RTCPeerConnection
-    Receiver->>Receiver: 8. Set remote description, create SDP answer
-    Receiver->>Nostr: 9. Publish Answer (SDP)
-
-    Note over Receiver: Gathering ICE candidates...
-    Receiver-->>Nostr: (async) Publish ICE candidates as gathered
-
-    Nostr->>Sender: 10. Receive Answer (SDP)
-    Nostr-->>Sender: (async) Receive Receiver's ICE candidates
-
-    Note over Sender,Receiver: ICE connectivity checks, WebRTC connection established
-
-    Note over Sender,Receiver: Shared AES-256-GCM key is embedded in the beam code
-    Sender->>Receiver: 11. Send Encrypted Header (AES-256-GCM)
-    alt User accepts transfer
-        Receiver->>Sender: 12. Send Encrypted PROCEED
-    else User declines
-        Receiver->>Sender: 12. Send Encrypted ABORT
-    end
-
-    loop 16KB chunks
-        Sender->>Receiver: Send Encrypted Chunk
-    end
-
-    Receiver->>Sender: ACK
-```
-
-#### WebRTC Manual Mode
-
-Manual WebRTC mode uses the same WebRTC DataChannel transport and encrypted
-transfer protocol as Nostr-signaled WebRTC mode, but replaces relay signaling
-with two user-copied payloads. The offer contains the SDP offer, sender ICE
-candidates, transfer metadata, creation timestamp, and AES key. The answer
-contains the SDP answer and receiver ICE candidates.
-
-```mermaid
-sequenceDiagram
-    participant Sender
-    participant User as User Copy/Paste Channel
-    participant Receiver
-
-    Sender->>Sender: 1. Create RTCPeerConnection + data channel
-    Sender->>Sender: 2. Create SDP offer
-    Sender->>Sender: 3. Gather sender ICE candidates
-    Sender->>Sender: 4. Generate manual offer payload
-    Note over Sender: Offer = SDP offer + ICE candidates + transfer info + created_at + AES key
-
-    Sender->>User: 5. Display offer code
-    User->>Receiver: 6. Paste offer code into receive-manual
-
-    Receiver->>Receiver: 7. Validate offer TTL and checksum
-    Receiver->>Receiver: 8. Create RTCPeerConnection
-    Receiver->>Receiver: 9. Set remote offer and add sender ICE candidates
-    Receiver->>Receiver: 10. Create SDP answer and gather receiver ICE candidates
-
-    Receiver->>User: 11. Display answer code
-    User->>Sender: 12. Paste answer code into send-manual
-
-    Sender->>Sender: 13. Set remote answer and add receiver ICE candidates
-
-    Note over Sender,Receiver: ICE connectivity checks, WebRTC connection established
-    Note over Sender,Receiver: The manual offer carries the AES-256-GCM key
-
-    Sender->>Receiver: 14. Send Encrypted Header (AES-256-GCM)
-    alt User accepts transfer
-        Receiver->>Sender: 15. Send Encrypted PROCEED
-    else User declines or file conflict
-        Receiver->>Sender: 15. Send Encrypted ABORT
-        Note over Sender,Receiver: Transfer cancelled
-    end
-
-    loop 16KB chunks
-        Sender->>Receiver: Send Encrypted Chunk
-    end
-
-    Receiver->>Sender: 16. Send Encrypted ACK
-```
-
 ## Connection Types/Modes
 
 ### Default iroh Mode (`beam-rs send`) - Recommended
@@ -260,22 +157,6 @@ sequenceDiagram
 - **PIN Support**: No
 - **Encryption**: Tor circuit encryption plus mandatory AES-256-GCM at the application layer.
 
-### Default WebRTC Mode (`beam-rs-webrtc send`)
-- **Transport**: WebRTC DataChannel over DTLS
-- **Discovery**: Nostr relays for SDP/ICE signaling
-- **NAT Traversal**: ICE with multiple public STUN servers (Google + Cloudflare)
-- **PIN Support**: Yes (`beam-rs-webrtc send --pin` / `beam-rs-webrtc receive --pin`)
-- **Encryption**: DTLS (WebRTC built-in) + AES-256-GCM at application layer
-- **Fallback**: Try iroh mode (with automatic relay) if direct P2P fails. Use `beam-rs-tor` for anonymity
-
-### WebRTC Manual Mode (`beam-rs-webrtc send-manual`)
-- **Transport**: WebRTC DataChannel over DTLS
-- **Discovery**: Manual copy/paste offer and answer payloads containing SDP and ICE candidates
-- **NAT Traversal**: ICE with multiple public STUN servers (Google + Cloudflare)
-- **Encryption**: DTLS (WebRTC built-in) + AES-256-GCM at application layer
-- **Key Exchange**: Manual offer payload (carries the AES key and must be shared over a trusted channel)
-- **PIN Support**: No; manual mode is a two-payload offer/answer exchange and does not use Nostr PIN lookup
-
 ## Security Model
 
 ### iroh Mode Encryption (Dual Layer)
@@ -289,26 +170,13 @@ iroh mode uses two encryption layers for defense in depth:
 - AES-256-GCM encryption for all data: headers, chunks, and control signals
 - 256-bit key generated per transfer, embedded in beam code
 
-### WebRTC Mode Encryption (Dual Layer)
-WebRTC mode uses two encryption layers for defense in depth:
-
-**Transport Layer (WebRTC/DTLS)**:
-- DTLS encryption for all data channel traffic
-- ICE consent for periodic connectivity verification
-
-**Application Layer (beam-rs)**:
-- AES-256-GCM encryption for all data: headers, chunks, and control signals
-- Per-transfer random key embedded in the beam code
-
 ### PIN-based Key Exchange (PIN Mode)
-PIN mode is available for the default iroh transport (`beam-rs send --pin`) and
-the default WebRTC transport (`beam-rs-webrtc send --pin`). It is not available
-for iroh `--local-only`, Tor, or WebRTC manual mode.
+PIN mode is available for the default iroh transport (`beam-rs send --pin`). It
+is not available for iroh `--local-only` or Tor.
 
 PIN mode exchanges the beam code through Nostr keyed by a short PIN, then runs
-a SPAKE2 handshake over the established transport to derive the session key. For
-iroh this SPAKE2 handshake runs over the QUIC stream; for WebRTC it runs over
-the DataChannel stream. PIN mode requires internet access for Nostr lookup.
+a SPAKE2 handshake over the established QUIC stream to derive the session key.
+PIN mode requires internet access for Nostr lookup.
 
 - **Format**: 12 characters (11 random + 1 checksum) from an unambiguous charset; the checksum catches typos before attempting a connection.
 - **Key Derivation**: The PIN is fed into SPAKE2 (with transfer_id as context) to derive the session key.
@@ -321,7 +189,7 @@ the DataChannel stream. PIN mode requires internet access for Nostr lookup.
 
 ### TTL (Time-To-Live) Validation
 
-All beam codes and signaling offers include a creation timestamp and are validated against a TTL to prevent replay attacks and stale session establishment.
+All beam codes include a creation timestamp and are validated against a TTL to prevent replay attacks and stale session establishment.
 
 **Implementation:**
 - **Token Version**: v4 tokens include a `created_at` Unix timestamp
@@ -329,8 +197,7 @@ All beam codes and signaling offers include a creation timestamp and are validat
 - **Clock Skew**: Allows up to 60 seconds into the future to handle minor clock drift
 
 **Validation Points:**
-1. **Beam Codes** (iroh, iroh `--local-only`, tor, webrtc via Nostr): Validated in `parse_code()` before connection. Local-only codes use the same v4 token format and are validated the same way.
-2. **Manual Signaling Offers** (`send-manual`/`receive-manual` WebRTC): Validated in `read_offer_json()` before WebRTC handshake
+1. **Beam Codes** (iroh, iroh `--local-only`, tor): Validated in `parse_code()` before connection. Local-only codes use the same v4 token format and are validated the same way.
 
 **Error Messages:**
 - Expired codes: "Token expired: code is X minutes old (max 60 minutes). Please request a new code from the sender."
@@ -379,12 +246,6 @@ When the transfer completes successfully:
 
 Keeping both temp/staging files in the same directory ensures the final rename
 is on the same filesystem, which enables atomic replacement semantics.
-
-### WebRTC Message Format
-
-WebRTC uses the same length-prefixed encrypted framing as stream transports. The
-`DataChannelStream` adapter bridges WebRTC's `RTCDataChannel` to tokio's
-`AsyncRead/AsyncWrite`, so the unified protocol works without special-casing.
 
 ### Nonce Derivation
 
