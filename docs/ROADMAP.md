@@ -4,6 +4,12 @@
 
 Ideas and feature requests for future consideration.
 
+### Non-Interactive Code Input via stdin
+**Domain:** CLI / Scripting
+- **Feature:** Let `receive` read the beam code/PIN from **stdin** (e.g. `echo <CODE> | beam-rs receive`) instead of prompting interactively.
+- **Context:** The `--code`/`-c` argument was removed (receivers now always prompt). A piped-stdin path restores non-interactive/scripted use without putting the secret in a shell argument (where it would leak into process listings and shell history). This would be a different mechanism than the old `--code` flag.
+- **Applies to:** both `beam-rs` and `beam-rs-tor`.
+
 ### Browser-Accessible Tor Downloads
 **Domain:** Tor Mode
 - **Feature:** Enable `beam-rs-tor send` to serve files via standard HTTP over the Onion network.

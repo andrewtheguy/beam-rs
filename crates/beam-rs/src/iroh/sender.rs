@@ -105,13 +105,14 @@ async fn transfer_data_internal(
     let key = generate_key();
 
     // Create iroh endpoint
-    let endpoint = create_sender_endpoint(relay_urls, no_server).await?;
+    let endpoint = create_sender_endpoint(relay_urls.clone(), no_server).await?;
 
     // Get our address
     let addr = endpoint.addr();
 
-    // Generate beam code
-    let code = generate_code(&addr, &key, no_server)?;
+    // Generate beam code. The configured custom relays are embedded so the
+    // receiver adopts them without needing its own --relay-url flag.
+    let code = generate_code(&addr, &key, &relay_urls, no_server)?;
 
     if use_pin {
         print_receiver_command("beam-rs receive --pin");

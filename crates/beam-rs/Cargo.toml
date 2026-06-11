@@ -15,15 +15,17 @@ beam-common = { path = "../beam-common", features = ["tui"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 anyhow = { workspace = true }
-clap = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
-nostr-sdk = { workspace = true }
 tempfile = { workspace = true }
+clap = { workspace = true }
+
+# Nostr signaling
+nostr-sdk = "0.44.1"
 
 # PIN-based Nostr exchange / SPAKE2 handshake (iroh-only, moved from beam-common)
 aes-gcm = "0.10"
@@ -40,5 +42,5 @@ iroh-mdns-address-lookup = "0.3.0"
 hickory-resolver = "0.26.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
-# Crate-specific dependencies
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Tracing
+tracing-subscriber = { workspace = true }

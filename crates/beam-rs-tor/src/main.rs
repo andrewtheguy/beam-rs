@@ -38,10 +38,6 @@ enum Commands {
 
     /// Receive a file or folder using a code
     Receive {
-        /// Beam code from sender (will prompt if not provided)
-        #[arg(short, long)]
-        code: Option<String>,
-
         /// Output directory (default: current directory)
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -166,13 +162,10 @@ async fn run(command: Commands) -> Result<()> {
             }
         }
 
-        Commands::Receive { code, output } => {
+        Commands::Receive { output } => {
             validate_output_dir(&output)?;
 
-            let code = match code {
-                Some(c) => c,
-                None => ui::sink().prompt_line("Enter beam code: ", "")?.trim().to_string(),
-            };
+            let code = ui::sink().prompt_line("Enter beam code: ", "")?.trim().to_string();
 
             beam::validate_code_format(&code)?;
             onion_receiver::receive_file_tor(&code, output).await?;

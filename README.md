@@ -81,10 +81,11 @@ beam-rs send /path/to/folder --folder
 
 ##### Custom Iroh Relays
 - Default behavior uses iroh's public relay fallback plus direct P2P.
-- For self-hosted setups, point both sides at your own DERP relay(s):
+- For self-hosted setups, set the relay(s) on the **sender** only — they are
+  embedded in the beam code, so the receiver adopts them automatically:
     ```bash
     beam-rs send --relay-url https://relay1.example.com /path/to/file
-    beam-rs receive --relay-url https://relay1.example.com
+    beam-rs receive   # picks up the sender's relay(s) from the code
     ```
 - Multiple `--relay-url` flags are supported for failover.
 
@@ -101,11 +102,8 @@ beam-rs-tor send /path/to/file
 
 ```bash
 beam-rs receive
-# Or with code directly
-beam-rs receive --code <BEAM_CODE>
-
-# Receive using PIN
-beam-rs receive --pin
+# Prompts for the beam code or PIN (a 12-character PIN is auto-detected and
+# resolved via Nostr).
 ```
 
 ---
@@ -122,7 +120,7 @@ beam-rs receive --pin
   succeed if a public/port-mapped address happens to be reachable, but NAT and
   firewalls usually prevent that.
 
-> **Note**: Tor mode requires internet access. iroh mode can be air‑gapped when you self‑host the relay and point both sides at it via `--relay-url`; the default public relay requires internet access.
+> **Note**: Tor mode requires internet access. iroh mode can be air‑gapped when you self‑host the relay and point the sender at it via `--relay-url` (the receiver picks it up from the code); the default public relay requires internet access.
 
 #### No-server (`--no-server`)
 

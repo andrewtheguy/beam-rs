@@ -58,23 +58,11 @@ enum Commands {
         no_server: bool,
     },
 
-    /// Receive a file or folder using a code
+    /// Receive a file or folder using a beam code or PIN
     Receive {
-        /// Beam code from sender (will prompt if not provided)
-        #[arg(short, long)]
-        code: Option<String>,
-
         /// Output directory (default: current directory)
         #[arg(short, long)]
         output: Option<PathBuf>,
-
-        /// Custom relay server URLs (for iroh transport)
-        #[arg(long)]
-        relay_url: Vec<String>,
-
-        /// Use PIN-based code exchange for Nostr (prompts for PIN input)
-        #[arg(long)]
-        pin: bool,
 
         /// Disable resumable transfers (don't save partial downloads)
         #[arg(long)]
@@ -199,6 +187,44 @@ fn init_tracing(discard: bool) {
     }
 }
 
+/// Prompt for a beam code or PIN, re-prompting on empty input.
+///
+/// Auto-detection happens at the call site via [`crate::auth::pin::validate_pin`].
+/// As a usability aid, an input that has the PIN length and uses only PIN
+/// characters but fails the checksum is treated as a mistyped PIN and re-prompted
+/// (pre-filled for editing) rather than silently falling through to be parsed as a
+/// beam code, which would produce a confusing "invalid code" error.
+fn prompt_code_or_pin() -> Result<String> {
+    use crate::auth::pin::{PIN_CHARSET, PIN_LENGTH, validate_pin};
+
+    let mut initial = String::new();
+    loop {
+        let input = ui::sink()
+            .prompt_line("Enter beam code or PIN: ", &initial)?
+            .trim()
+            .to_string();
+
+        if input.is_empty() {
+            ui::sink().info("Input cannot be empty.");
+            initial = String::new();
+            continue;
+        }
+
+        // Looks like a PIN attempt (right length, valid charset) but the checksum
+        // doesn't match — almost certainly a typo. Re-prompt instead of treating
+        // it as a beam code.
+        let looks_like_pin = input.len() == PIN_LENGTH
+            && input.bytes().all(|b| PIN_CHARSET.contains(&b));
+        if looks_like_pin && !validate_pin(&input) {
+            ui::sink().info("That looks like a PIN but the checksum is invalid — please re-check it.");
+            initial = input;
+            continue;
+        }
+
+        return Ok(input);
+    }
+}
+
 /// Dispatch the parsed CLI command.
 async fn run(command: Commands) -> Result<()> {
     match command {
@@ -229,26 +255,21 @@ async fn run(command: Commands) -> Result<()> {
             }
         }
 
-        Commands::Receive {
-            mut code,
-            output,
-            relay_url,
-            pin,
-            no_resume,
-        } => {
+        Commands::Receive { output, no_resume } => {
             // Validate output directory if provided
             validate_output_dir(&output)?;
 
-            // Handle PIN mode if requested
-            let pin_info = if pin {
-                let pin_str = crate::auth::pin::prompt_pin()?;
+            // Prompt for the input, then auto-detect whether it is a 12-character
+            // PIN (resolved via Nostr) or a full beam code.
+            let input = prompt_code_or_pin()?;
 
+            let (code, pin_info) = if crate::auth::pin::validate_pin(&input) {
                 ui::sink().status("Searching for beam token via Nostr...");
 
-                // Fetch encrypted token from Nostr
+                // Fetch encrypted token from Nostr using the PIN.
                 let result = tokio::time::timeout(
                     std::time::Duration::from_secs(30),
-                    crate::auth::nostr_pin::fetch_beam_code_via_pin(&pin_str),
+                    crate::auth::nostr_pin::fetch_beam_code_via_pin(&input),
                 )
                 .await
                 .map_err(|_| {
@@ -257,19 +278,12 @@ async fn run(command: Commands) -> Result<()> {
                     )
                 })??;
                 ui::sink().status("Token found and decrypted!");
-                code = Some(result.code);
-                Some(PinInfo { pin: pin_str, transfer_id: result.transfer_id })
+                (result.code, Some(PinInfo { pin: input, transfer_id: result.transfer_id }))
             } else {
-                None
+                (input, None)
             };
 
-            // Get code from argument or prompt
-            let code = match code {
-                Some(c) => c,
-                None => ui::sink().prompt_line("Enter beam code: ", "")?.trim().to_string(),
-            };
-
-            receive_with_code(&code, output, relay_url, no_resume, pin_info).await?;
+            receive_with_code(&code, output, no_resume, pin_info).await?;
         }
     }
 
@@ -280,7 +294,6 @@ async fn run(command: Commands) -> Result<()> {
 async fn receive_with_code(
     code: &str,
     output: Option<PathBuf>,
-    relay_url: Vec<String>,
     no_resume: bool,
     pin_info: Option<PinInfo>,
 ) -> Result<()> {
@@ -294,25 +307,19 @@ async fn receive_with_code(
         beam::PROTOCOL_IROH => {
             // A no-server code carries an endpoint address with no relay URL
             // (but embedded direct IPs). Detect that and disable relays on the
-            // receiver to match the sender.
+            // receiver to match the sender. Any custom relays the sender used
+            // travel inside the code, so the receiver needs no relay flag.
             let no_server = token
                 .addr
                 .as_ref()
                 .map(|addr| addr.relay.is_none())
                 .unwrap_or(false);
-            if no_server && !relay_url.is_empty() {
-                ui::sink().status(
-                    "Warning: --relay-url is ignored for this beam code: it is a no-server \
-                     code (no relay), so relays are disabled on the receiver to match the sender.",
-                );
-            }
-            iroh_receiver::receive(code, output, relay_url, no_resume, pin_info, no_server)
-                .await?;
+            iroh_receiver::receive(code, output, no_resume, pin_info, no_server).await?;
         }
         beam::PROTOCOL_TOR => {
             anyhow::bail!(
                 "This beam code uses Tor transport.\n\
-                 To receive via Tor, use: beam-rs-tor receive --code <CODE>"
+                 To receive via Tor, use: beam-rs-tor receive (it will prompt for the code)"
             );
         }
         proto => {
