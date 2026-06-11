@@ -4,11 +4,20 @@
 
 Ideas and feature requests for future consideration.
 
-### Non-Interactive Code Input via stdin
+### Non-Interactive / Scripting Mode (flow refactor)
 **Domain:** CLI / Scripting
-- **Feature:** Let `receive` read the beam code/PIN from **stdin** (e.g. `echo <CODE> | beam-rs receive`) instead of prompting interactively.
-- **Context:** The `--code`/`-c` argument was removed (receivers now always prompt). A piped-stdin path restores non-interactive/scripted use without putting the secret in a shell argument (where it would leak into process listings and shell history). This would be a different mechanism than the old `--code` flag.
+- **Feature:** A coherent non-interactive mode for scripted/piped use, where the tool never blocks on a terminal prompt.
+- **Scope — cross-cutting, not a single flag:** This touches *every* interactive prompt, not just code input:
+  - Beam code / PIN entry on `receive` (the `--code`/`-c` argument was removed, so receivers currently always prompt).
+  - The overwrite-existing-file confirmation, and any other `prompt_line` / confirm calls.
+  Each of these needs a defined non-interactive behavior (read from stdin, or a safe default such as fail-closed on overwrite) — designing one in isolation would leave the others inconsistent.
+- **Open question — mechanism is undecided:**
+  - Could be *implied* by the existing `--no-tui` flag (which already means "no interactive terminal"), rather than a new dedicated flag.
+  - Or an explicit flag (e.g. reading the code/PIN from stdin: `echo <CODE> | beam-rs receive`). Stdin keeps the secret out of `argv` (avoids leaking into process listings / shell history).
+  - Decision deferred until the whole flow is designed together.
 - **Applies to:** both `beam-rs` and `beam-rs-tor`.
+- **Also in scope for that effort:** user-facing documentation for non-interactive usage (not written yet).
+- **Status:** Deferred — design only when the larger prompt/flow refactor is taken up.
 
 ### Browser-Accessible Tor Downloads
 **Domain:** Tor Mode
