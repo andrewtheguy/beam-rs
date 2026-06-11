@@ -144,7 +144,7 @@ sequenceDiagram
 - **Failover**: Uses multiple relays for redundancy; monitors latency to select the best path.
 - **Connection**: "Hole punching" attempts to establish a direct UDP connection; falls back to relay if NATs are strict.
 - **Protocol**: ALPN `beam-transfer/1`.
-- **PIN Support**: Yes (`beam-rs send --pin` / `beam-rs receive --pin`)
+- **PIN Support**: Yes (`beam-rs send --pin`; the receiver runs `beam-rs receive` and enters the PIN at the prompt — it is auto-detected vs. a full beam code)
 - **Encryption**: Always AES-256-GCM encrypted at the application layer, plus QUIC/TLS encryption.
 
 ### No-server Mode (`beam-rs send --no-server`)
