@@ -21,12 +21,17 @@
 //! as in plain mode; on other platforms it exits with code 130.
 
 use std::io;
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::mpsc as stdmpsc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use crossterm::cursor::MoveTo;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::queue;
+use crossterm::style::{Attribute, Print, SetAttribute};
+use crossterm::terminal::{Clear, ClearType};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Style, Stylize};
@@ -280,8 +285,15 @@ fn render_loop(terminal: &mut DefaultTerminal, mut rx: UnboundedReceiver<UiEvent
                     insert_lines(terminal, plain_lines(&s))?;
                 }
                 Ok(UiEvent::Code(c)) => {
-                    let lines = code_lines(&c, terminal_width(terminal));
-                    insert_lines(terminal, lines)?;
+                    insert_lines(
+                        terminal,
+                        vec![
+                            Line::from(""),
+                            Line::from(Span::styled("🔮 Beam code:", Style::new().cyan().bold())),
+                        ],
+                    )?;
+                    insert_code_raw(terminal, &c)?;
+                    insert_lines(terminal, vec![Line::from("")])?;
                 }
                 Ok(UiEvent::Pin(p)) => insert_lines(terminal, pin_lines(&p))?,
                 Ok(UiEvent::Progress(p)) => {
@@ -438,16 +450,47 @@ fn pin_lines(pin: &str) -> Vec<Line<'static>> {
     ]
 }
 
-fn code_lines(code: &str, width: u16) -> Vec<Line<'static>> {
-    let mut out = vec![
-        Line::from(""),
-        Line::from(Span::styled("🔮 Beam code:", Style::new().cyan().bold())),
-    ];
-    for chunk in wrap_chars(code, width as usize) {
-        out.push(Line::from(Span::styled(chunk, Style::new().bold())));
+/// Insert the beam code into scrollback as a single, soft-wrapped logical line.
+///
+/// [`insert_lines`] renders through ratatui's fixed-width grid, which hard-wraps
+/// a long code into separate terminal rows padded with spaces — so selecting it
+/// from scrollback yields a string broken by newlines. Instead, this reserves
+/// the exact number of rows the code needs (which also repositions the
+/// viewport), then writes the code in *one continuous write* and lets the
+/// terminal autowrap it. The code therefore renders — and copies — as one
+/// unbroken line.
+fn insert_code_raw(terminal: &mut DefaultTerminal, code: &str) -> io::Result<()> {
+    let width = terminal_width(terminal);
+    let rows = code.chars().count().div_ceil(width as usize).max(1);
+
+    // We can only raw-write rows that are currently on screen. If the block plus
+    // the viewport wouldn't fit, fall back to the grid (hard-wrapped) path.
+    if rows + VIEWPORT_HEIGHT as usize > terminal.size()?.height as usize {
+        let lines = wrap_chars(code, width as usize)
+            .into_iter()
+            .map(|c| Line::from(Span::styled(c, Style::new().bold())))
+            .collect();
+        return insert_lines(terminal, lines);
     }
-    out.push(Line::from(""));
-    out
+
+    // Reserve `rows` blank rows above the viewport. The empty draw closure means
+    // we only borrow the scrolling/positioning bookkeeping; the cells are
+    // overwritten below. `insert_before` updates the viewport area, which we
+    // then read back to find the top of the reserved region.
+    terminal.insert_before(rows as u16, |_buf| {})?;
+    let start_y = terminal.get_frame().area().y.saturating_sub(rows as u16);
+
+    let out = terminal.backend_mut();
+    queue!(
+        out,
+        MoveTo(0, start_y),
+        SetAttribute(Attribute::Bold),
+        Print(code),
+        SetAttribute(Attribute::Reset),
+        // Wipe the blank cells `insert_before` left on the final wrapped row.
+        Clear(ClearType::UntilNewLine),
+    )?;
+    out.flush()
 }
 
 /// Wrap an ASCII string into chunks of at most `width` characters so a long
