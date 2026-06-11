@@ -12,7 +12,6 @@ REPO_OWNER="andrewtheguy"
 REPO_NAME="beam-rs"
 DOWNLOAD_ONLY=false
 PREFER_PRERELEASE=false
-INSTALL_WEBRTC=false
 
 # Color output (defined early for use in release tag helpers)
 RED='\033[0;31m'
@@ -165,10 +164,6 @@ parse_args() {
                 PREFER_PRERELEASE=true
                 shift
                 ;;
-            --webrtc)
-                INSTALL_WEBRTC=true
-                shift
-                ;;
             --help|-h)
                 show_usage
                 exit 0
@@ -234,13 +229,8 @@ detect_arch() {
 
 # Map OS and architecture to binary name
 get_binary_name() {
-    if [ "$INSTALL_WEBRTC" = true ]; then
-        BINARY_PREFIX="beam-rs-webrtc"
-        INSTALL_NAME="beam-rs-webrtc"
-    else
-        BINARY_PREFIX="beam-rs"
-        INSTALL_NAME="beam-rs"
-    fi
+    BINARY_PREFIX="beam-rs"
+    INSTALL_NAME="beam-rs"
 
     case "${OS}-${ARCH}" in
         "linux-amd64")
@@ -448,7 +438,6 @@ show_usage() {
     echo "Options:"
     echo "  --download-only  Download binary to current directory without installing"
     echo "  --prerelease     Use latest prerelease instead of latest stable release"
-    echo "  --webrtc         Install beam-rs-webrtc binary instead of beam-rs"
     echo "  -h, --help       Show this help message"
     echo ""
     echo "Arguments:"
@@ -456,7 +445,6 @@ show_usage() {
     echo ""
     echo "Examples:"
     echo "  $0                              # Install latest beam-rs"
-    echo "  $0 --webrtc                     # Install beam-rs-webrtc"
     echo "  $0 20251210172710               # Install specific release"
     echo "  $0 --prerelease                 # Install latest prerelease"
     echo "  $0 --download-only              # Download latest to current directory"

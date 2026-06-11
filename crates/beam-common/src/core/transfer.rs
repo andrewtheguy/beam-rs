@@ -654,7 +654,6 @@ pub enum ControlSignal {
     Proceed,
     Abort,
     Ack,
-    Done,
     /// Resume transfer from byte offset
     Resume(u64),
 }
@@ -754,117 +753,6 @@ pub async fn recv_control<R: AsyncReadExt + Unpin>(
             Ok(ControlSignal::Resume(offset))
         }
         _ => anyhow::bail!("Unknown control signal"),
-    }
-}
-
-// WebRTC-specific control message format: [type(1)][len(4)][encrypted]
-// Type: 2 = DONE, 3 = ACK, 4 = PROCEED, 5 = ABORT, 6 = RESUME
-const WEBRTC_MSG_TYPE_DONE: u8 = 2;
-const WEBRTC_MSG_TYPE_ACK: u8 = 3;
-const WEBRTC_MSG_TYPE_PROCEED: u8 = 4;
-const WEBRTC_MSG_TYPE_ABORT: u8 = 5;
-const WEBRTC_MSG_TYPE_RESUME: u8 = 6;
-
-/// Create encrypted PROCEED message for WebRTC data channel
-pub fn make_webrtc_proceed_msg(key: &[u8; 32]) -> Result<Vec<u8>> {
-    let encrypted = encrypt(key, b"PROCEED")?;
-    let mut msg = vec![WEBRTC_MSG_TYPE_PROCEED];
-    msg.extend_from_slice(&(encrypted.len() as u32).to_be_bytes());
-    msg.extend_from_slice(&encrypted);
-    Ok(msg)
-}
-
-/// Create encrypted ABORT message for WebRTC data channel
-pub fn make_webrtc_abort_msg(key: &[u8; 32]) -> Result<Vec<u8>> {
-    let encrypted = encrypt(key, b"ABORT")?;
-    let mut msg = vec![WEBRTC_MSG_TYPE_ABORT];
-    msg.extend_from_slice(&(encrypted.len() as u32).to_be_bytes());
-    msg.extend_from_slice(&encrypted);
-    Ok(msg)
-}
-
-/// Create encrypted ACK message for WebRTC data channel
-pub fn make_webrtc_ack_msg(key: &[u8; 32]) -> Result<Vec<u8>> {
-    let encrypted = encrypt(key, b"ACK")?;
-    let mut msg = vec![WEBRTC_MSG_TYPE_ACK];
-    msg.extend_from_slice(&(encrypted.len() as u32).to_be_bytes());
-    msg.extend_from_slice(&encrypted);
-    Ok(msg)
-}
-
-/// Create encrypted DONE message for WebRTC data channel
-pub fn make_webrtc_done_msg(key: &[u8; 32]) -> Result<Vec<u8>> {
-    let encrypted = encrypt(key, b"DONE")?;
-    let mut msg = vec![WEBRTC_MSG_TYPE_DONE];
-    msg.extend_from_slice(&(encrypted.len() as u32).to_be_bytes());
-    msg.extend_from_slice(&encrypted);
-    Ok(msg)
-}
-
-/// Create encrypted RESUME message for WebRTC data channel
-/// Payload format: "RESUME:" || offset(8 bytes BE)
-pub fn make_webrtc_resume_msg(key: &[u8; 32], offset: u64) -> Result<Vec<u8>> {
-    let mut payload = Vec::with_capacity(15); // "RESUME:" + 8 bytes
-    payload.extend_from_slice(b"RESUME:");
-    payload.extend_from_slice(&offset.to_be_bytes());
-
-    let encrypted = encrypt(key, &payload)?;
-    let mut msg = vec![WEBRTC_MSG_TYPE_RESUME];
-    msg.extend_from_slice(&(encrypted.len() as u32).to_be_bytes());
-    msg.extend_from_slice(&encrypted);
-    Ok(msg)
-}
-
-/// Parse encrypted control message from WebRTC data channel
-/// Returns Some(signal) if the message type matches a control signal and decryption succeeds
-/// Returns None if the message type is not a control signal
-/// Returns Err if the message is malformed or decryption fails
-pub fn parse_webrtc_control_msg(data: &[u8], key: &[u8; 32]) -> Result<Option<ControlSignal>> {
-    if data.is_empty() {
-        return Ok(None);
-    }
-
-    let msg_type = data[0];
-
-    // Check if it's a control message type
-    if msg_type != WEBRTC_MSG_TYPE_DONE
-        && msg_type != WEBRTC_MSG_TYPE_ACK
-        && msg_type != WEBRTC_MSG_TYPE_PROCEED
-        && msg_type != WEBRTC_MSG_TYPE_ABORT
-        && msg_type != WEBRTC_MSG_TYPE_RESUME
-    {
-        return Ok(None); // Not a control message
-    }
-
-    // Parse message: [type(1)][len(4)][encrypted]
-    if data.len() < 5 {
-        anyhow::bail!("Control message too short");
-    }
-
-    let encrypted_len = u32::from_be_bytes([data[1], data[2], data[3], data[4]]) as usize;
-    if data.len() < 5 + encrypted_len {
-        anyhow::bail!("Control message truncated");
-    }
-
-    let encrypted = &data[5..5 + encrypted_len];
-
-    // Decrypt and verify payload matches message type
-    let decrypted = decrypt(key, encrypted)?;
-
-    match (msg_type, decrypted.as_slice()) {
-        (WEBRTC_MSG_TYPE_DONE, b"DONE") => Ok(Some(ControlSignal::Done)),
-        (WEBRTC_MSG_TYPE_PROCEED, b"PROCEED") => Ok(Some(ControlSignal::Proceed)),
-        (WEBRTC_MSG_TYPE_ABORT, b"ABORT") => Ok(Some(ControlSignal::Abort)),
-        (WEBRTC_MSG_TYPE_ACK, b"ACK") => Ok(Some(ControlSignal::Ack)),
-        (WEBRTC_MSG_TYPE_RESUME, payload)
-            if payload.starts_with(b"RESUME:") && payload.len() == 15 =>
-        {
-            // Parse offset from "RESUME:" || offset(8 bytes BE)
-            let offset_bytes: [u8; 8] = payload[7..15].try_into().unwrap();
-            let offset = u64::from_be_bytes(offset_bytes);
-            Ok(Some(ControlSignal::Resume(offset)))
-        }
-        _ => anyhow::bail!("Control message type/payload mismatch"),
     }
 }
 

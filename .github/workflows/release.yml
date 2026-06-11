@@ -84,15 +84,6 @@ jobs:
           name: release-${{ matrix.suffix }}
           path: target/release/beam-rs-${{ matrix.suffix }}
 
-      - name: Rename WebRTC Binary
-        run: mv target/${{ matrix.target }}/release/beam-rs-webrtc target/release/beam-rs-webrtc-${{ matrix.suffix }}
-
-      - name: Upload WebRTC release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-webrtc-${{ matrix.suffix }}
-          path: target/release/beam-rs-webrtc-${{ matrix.suffix }}
-
       - name: Rename Tor Binary
         run: mv target/${{ matrix.target }}/release/beam-rs-tor target/release/beam-rs-tor-${{ matrix.suffix }}
 
@@ -131,15 +122,6 @@ jobs:
           name: release-${{ matrix.suffix }}
           path: target/release/beam-rs-${{ matrix.suffix }}
 
-      - name: Rename WebRTC Binary
-        run: mv target/${{ matrix.target }}/release/beam-rs-webrtc target/release/beam-rs-webrtc-${{ matrix.suffix }}
-
-      - name: Upload WebRTC release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-webrtc-${{ matrix.suffix }}
-          path: target/release/beam-rs-webrtc-${{ matrix.suffix }}
-
       - name: Rename Tor Binary
         run: mv target/${{ matrix.target }}/release/beam-rs-tor target/release/beam-rs-tor-${{ matrix.suffix }}
 
@@ -176,15 +158,6 @@ jobs:
         with:
           name: release-${{ env.SUFFIX }}
           path: target/release/beam-rs-${{ env.SUFFIX }}.exe
-
-      - name: Rename WebRTC Binary
-        run: move target\${{ env.TARGET }}\release\beam-rs-webrtc.exe target\release\beam-rs-webrtc-${{ env.SUFFIX }}.exe
-
-      - name: Upload WebRTC release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-webrtc-${{ env.SUFFIX }}
-          path: target/release/beam-rs-webrtc-${{ env.SUFFIX }}.exe
 
       - name: Rename Tor Binary
         run: move target\${{ env.TARGET }}\release\beam-rs-tor.exe target\release\beam-rs-tor-${{ env.SUFFIX }}.exe

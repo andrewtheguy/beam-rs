@@ -11,7 +11,6 @@ $ReleaseTag   = $null
 $Admin        = $false
 $PreRelease   = $false
 $DownloadOnly = $false
-$WebRTC       = $false
 
 $ErrorActionPreference = "Stop"
 
@@ -21,7 +20,7 @@ $REPO_NAME = "beam-rs"
 # Allow passing flags when the script is piped into Invoke-Expression (iex) where
 # normal PowerShell parameter binding is unavailable. Users can set
 # $env:BEAM_INSTALL_ARGS to a PowerShell-style argument string, e.g.:
-#   $env:BEAM_INSTALL_ARGS='-WebRTC'; irm https://andrewtheguy.github.io/beam-rs/install.ps1 | iex
+#   $env:BEAM_INSTALL_ARGS='-PreRelease'; irm https://andrewtheguy.github.io/beam-rs/install.ps1 | iex
 # This keeps the single-line install experience while still supporting flags.
 
 # Function to print colored messages
@@ -190,16 +189,10 @@ function Get-BinaryName {
         exit 1
     }
 
-    if ($WebRTC) {
-        return "beam-rs-webrtc-windows-amd64.exe"
-    }
     return "beam-rs-windows-amd64.exe"
 }
 
 function Get-InstallName {
-    if ($WebRTC) {
-        return "beam-rs-webrtc.exe"
-    }
     return "beam-rs.exe"
 }
 
@@ -245,8 +238,6 @@ function Apply-FallbackArgs {
             '/prerelease' { $script:PreRelease = $true; continue }
             '-downloadonly' { $script:DownloadOnly = $true; continue }
             '/downloadonly' { $script:DownloadOnly = $true; continue }
-            '-webrtc' { $script:WebRTC = $true; continue }
-            '/webrtc' { $script:WebRTC = $true; continue }
             '-h' { Show-Usage; exit 0 }
             '/h' { Show-Usage; exit 0 }
             '--help' { Show-Usage; exit 0 }
@@ -422,7 +413,6 @@ Download and install beam-rs binary
 Options:
   -DownloadOnly  Download binary to current directory without installing
   -PreRelease    Use latest prerelease instead of latest stable release
-  -WebRTC        Install beam-rs-webrtc binary instead of beam-rs
   -Admin         Allow installation with administrator privileges (not recommended)
   -h, --help     Show this help message
 
@@ -431,18 +421,17 @@ Arguments:
 
 Environment variables:
   `$env:RELEASE_TAG    Alternative way to specify release tag
-    `$env:BEAM_INSTALL_ARGS  Fallback flags for iex one-liners (e.g. "-WebRTC")
+    `$env:BEAM_INSTALL_ARGS  Fallback flags for iex one-liners (e.g. "-PreRelease")
 
 Examples:
     .\install.ps1                              # Install latest beam-rs (args-only parser)
-    .\install.ps1 -WebRTC                      # Install beam-rs-webrtc (args-only parser)
     .\install.ps1 20251210172710               # Install specific release
     .\install.ps1 -PreRelease                  # Install latest prerelease
     .\install.ps1 -DownloadOnly                # Download latest to current directory
     .\install.ps1 -DownloadOnly 20251210172710 # Download specific release
     .\install.ps1 -Admin                       # Allow admin installation (not recommended)
     `$env:RELEASE_TAG='latest'; .\install.ps1  # Use environment variable
-    `$env:BEAM_INSTALL_ARGS='-WebRTC'; irm https://andrewtheguy.github.io/beam-rs/install.ps1 | iex
+    `$env:BEAM_INSTALL_ARGS='-PreRelease'; irm https://andrewtheguy.github.io/beam-rs/install.ps1 | iex
 
 Supported platforms: Windows (amd64)
 
@@ -543,7 +532,6 @@ function Main {
         # Extra guard: honor env flags even if tokenization failed
         $envArgs = $env:BEAM_INSTALL_ARGS
         if ($envArgs) {
-            if (-not $WebRTC -and $envArgs -match '(?i)(^|\s)--?webrtc(\s|$)') { $WebRTC = $true }
             if (-not $PreRelease -and $envArgs -match '(?i)(^|\s)--?prerelease(\s|$)') { $PreRelease = $true }
             if (-not $DownloadOnly -and $envArgs -match '(?i)(^|\s)--?downloadonly(\s|$)') { $DownloadOnly = $true }
             if (-not $Admin -and $envArgs -match '(?i)(^|\s)--?admin(\s|$)') { $Admin = $true }

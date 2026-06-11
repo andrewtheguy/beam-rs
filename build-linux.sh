@@ -67,7 +67,7 @@ echo "----------------------"
 for arch in amd64 arm64; do
     archdir="$BUILD_DIR/linux_${arch}"
     if [ -d "$archdir" ]; then
-        for bin in beam-rs beam-rs-webrtc beam-rs-local beam-rs-tor; do
+        for bin in beam-rs beam-rs-tor; do
             if [ -f "$archdir/$bin" ]; then
                 mv "$archdir/$bin" "$BUILD_DIR/${bin}-linux-${arch}"
                 echo "✓ $(echo "$arch" | tr '[:lower:]' '[:upper:]') $bin saved to: $BUILD_DIR/${bin}-linux-${arch}"
