@@ -73,9 +73,8 @@ and no relay URL. The receiver auto-detects this mode from the missing relay URL
 and connects directly to the embedded addresses, falling back to mDNS. It is not
 strictly local-only — enforcing that would be an unnecessary burden — so a WAN
 connection may succeed when a public/port-mapped address is reachable, though
-NAT and firewalls commonly prevent it. No-server endpoints use a DNS resolver
-that does not read host DNS configuration, avoiding macOS scoped-resolver parse
-warnings in relay-free mode.
+NAT and firewalls commonly prevent it. (In no-server mode DNS is not used at
+all — mDNS handles address lookup — so relay hostname resolution never applies.)
 
 ```mermaid
 sequenceDiagram
@@ -184,8 +183,8 @@ a SPAKE2 handshake over the established QUIC stream to derive the session key.
 PIN mode requires internet access for Nostr lookup.
 
 - **Format**: 12 characters (11 random + 1 checksum) from an unambiguous charset; the checksum catches typos before attempting a connection.
-- **Key Derivation**: The PIN is fed into SPAKE2 (with transfer_id as context) to derive the session key.
-- **Security**: SPAKE2 prevents offline dictionary attacks and rejects wrong transfer_id.
+- **Key Derivation**: The PIN is the SPAKE2 password, with fixed `beam-rs-sender`/`beam-rs-receiver` identities; the handshake derives the session key. The transfer_id is exchanged alongside the handshake and validated separately (constant-time compare), not folded into the key.
+- **Security**: SPAKE2 prevents offline dictionary attacks, and a mismatched transfer_id is rejected before the key is used.
 - **Confidentiality**: All data (headers, chunks, and control signals) is AES-256-GCM encrypted with the SPAKE2-derived key, on top of the transport encryption.
 
 ### Tor Mode Security
