@@ -4,13 +4,14 @@ use anyhow::{Context, Result};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::StreamExt;
 use iroh::{
-    dns::DnsResolver,
+    dns::{DnsProtocol, DnsResolver},
     Endpoint, EndpointAddr, RelayMap, RelayUrl, TransportAddr, Watcher,
     endpoint::{Connection, PathList, RecvStream, RelayMode, SendStream, presets},
 };
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 use tokio::task::JoinHandle;
 use std::io;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
@@ -239,15 +240,12 @@ pub async fn create_sender_endpoint(relay_urls: Vec<String>, local_only: bool) -
     // only makes the ring backend available, it does not wire it in, and
     // rustls' global `install_default()` is not consulted.
     let crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut builder = Endpoint::builder(presets::Empty)
+    let builder = Endpoint::builder(presets::Empty)
         .crypto_provider(crypto_provider)
         .relay_mode(relay_mode)
         .alpns(vec![ALPN.to_vec()])
-        .address_lookup(MdnsAddressLookup::builder());
-
-    if local_only {
-        builder = builder.dns_resolver(local_only_dns_resolver());
-    }
+        .address_lookup(MdnsAddressLookup::builder())
+        .dns_resolver(beam_dns_resolver());
 
     let endpoint = builder
         .bind()
@@ -320,14 +318,11 @@ pub async fn create_receiver_endpoint(
     // only makes the ring backend available, it does not wire it in, and
     // rustls' global `install_default()` is not consulted.
     let crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut builder = Endpoint::builder(presets::Empty)
+    let builder = Endpoint::builder(presets::Empty)
         .crypto_provider(crypto_provider)
         .relay_mode(relay_mode)
-        .address_lookup(MdnsAddressLookup::builder());
-
-    if local_only {
-        builder = builder.dns_resolver(local_only_dns_resolver());
-    }
+        .address_lookup(MdnsAddressLookup::builder())
+        .dns_resolver(beam_dns_resolver());
 
     let endpoint = builder
         .bind()
@@ -337,14 +332,47 @@ pub async fn create_receiver_endpoint(
     Ok(endpoint)
 }
 
-/// Build a resolver for local-only endpoints without reading host DNS config.
+/// Build a DNS resolver, preferring the host's system configuration and
+/// falling back to public nameservers only when it cannot be read.
 ///
-/// iroh's default resolver reads the system resolver configuration during
-/// endpoint binding, even when relays are disabled. On macOS that can emit a
-/// warning when scoped resolver data contains a nameserver hickory cannot
-/// parse. Local-only mode does not need DNS; mDNS handles address lookup.
-fn local_only_dns_resolver() -> DnsResolver {
-    DnsResolver::builder().build()
+/// iroh's default resolver (`with_system_defaults`) reads the host resolver
+/// config during endpoint binding. When that read fails it logs a warning
+/// ("Failed to read the system's DNS config, using fallback DNS servers")
+/// before falling back internally. On macOS the read can fail to parse a
+/// scoped nameserver entry, producing that warning on every bind — and it is
+/// not specific to local-only mode.
+///
+/// To keep the system config when it is valid while avoiding the spurious
+/// warning, we probe the same `read_system_conf()` call iroh uses:
+///   - on success, defer to `with_system_defaults()` (the subsequent read
+///     inside iroh also succeeds, so no warning is emitted);
+///   - on failure, build a resolver with explicit public nameservers — the
+///     same Google servers iroh would otherwise fall back to — so iroh never
+///     reads the system config and never warns.
+///
+/// In local-only mode DNS is never used (mDNS handles address lookup); in
+/// relay mode this resolves relay hostnames and n0 discovery records. Note
+/// that `DnsResolver::builder().build()` alone yields a resolver with *no*
+/// nameservers (an empty `ResolverConfig::default()`), which is why the
+/// fallback adds servers explicitly.
+fn beam_dns_resolver() -> DnsResolver {
+    if hickory_resolver::system_conf::read_system_conf().is_ok() {
+        return DnsResolver::builder().with_system_defaults().build();
+    }
+
+    // System config could not be read/parsed: use Google public DNS, matching
+    // iroh's own fallback nameservers.
+    const NAMESERVERS: [IpAddr; 2] = [
+        IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+        IpAddr::V4(Ipv4Addr::new(8, 8, 4, 4)),
+    ];
+    let mut builder = DnsResolver::builder();
+    for ip in NAMESERVERS {
+        let addr = SocketAddr::new(ip, 53);
+        builder = builder.with_nameserver(addr, DnsProtocol::Udp);
+        builder = builder.with_nameserver(addr, DnsProtocol::Tcp);
+    }
+    builder.build()
 }
 
 /// Create a MinimalAddr from a full EndpointAddr.
