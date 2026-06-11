@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
@@ -136,18 +135,15 @@ fn main() {
 async fn async_main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Decide whether to run the interactive TUI: honor --no-tui and require both
-    // stdout and stderr to be terminals (the "like apt" auto-detect fallback).
-    let want_tui =
-        !cli.no_tui && std::io::stdout().is_terminal() && std::io::stderr().is_terminal();
-
-    // In TUI mode, tracing output is discarded so it can't corrupt the inline
-    // viewport; user-facing status flows through the UI sink instead.
-    init_tracing(want_tui);
-
-    // Start the inline TUI (if applicable) and install its sink. Returns None in
-    // plain mode, leaving the default plain sink in place.
+    // Start the inline TUI (if applicable) and install its sink. Honors
+    // --no-tui and the terminal auto-detect; returns None in plain mode (or if
+    // the inline viewport can't be initialized), leaving the plain sink in place.
     let tui_handle = beam_common::tui::decide_and_install(cli.no_tui);
+
+    // Only discard tracing once the TUI is actually active — otherwise a failed
+    // TUI init would silently drop logs with no viewport to show status. Set up
+    // tracing after installing the sink so the flag reflects the real state.
+    init_tracing(tui_handle.is_some());
 
     let result = run(cli.command).await;
 
