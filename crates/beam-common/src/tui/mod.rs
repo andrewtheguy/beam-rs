@@ -356,10 +356,7 @@ fn cancel_and_exit(terminal: &mut DefaultTerminal) {
     let _ = terminal.clear();
     restore_terminal();
     #[cfg(unix)]
-    // SAFETY: raising a signal is async-signal-safe and has no preconditions.
-    unsafe {
-        libc::raise(libc::SIGINT);
-    }
+    let _ = signal_hook::low_level::raise(signal_hook::consts::signal::SIGINT);
     #[cfg(not(unix))]
     std::process::exit(130);
 }
