@@ -293,6 +293,12 @@ async fn receive_with_code(
                 .as_ref()
                 .map(|addr| addr.relay.is_none())
                 .unwrap_or(false);
+            if no_server && !relay_url.is_empty() {
+                ui::sink().status(
+                    "Warning: --relay-url is ignored for this beam code: it is a no-server \
+                     code (no relay), so relays are disabled on the receiver to match the sender.",
+                );
+            }
             iroh_receiver::receive(code, output, relay_url, no_resume, pin_info, no_server)
                 .await?;
         }
