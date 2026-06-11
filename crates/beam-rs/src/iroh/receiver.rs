@@ -24,7 +24,6 @@ use beam_common::ui::{self, Phase};
 pub async fn receive(
     code: &str,
     output_dir: Option<PathBuf>,
-    relay_urls: Vec<String>,
     no_resume: bool,
     pin_info: Option<PinInfo>,
     no_server: bool,
@@ -39,6 +38,10 @@ pub async fn receive(
     let minimal_addr = token
         .addr
         .context("No iroh endpoint address in beam code")?;
+    // The sender's configured custom relays travel in the code, so the receiver
+    // adopts the same relay map with no CLI flag of its own. Empty when the
+    // sender used the default public relays.
+    let relay_urls = minimal_addr.relay_urls.clone();
     let addr = minimal_addr_to_endpoint(&minimal_addr)
         .context("Failed to parse endpoint address")?;
 

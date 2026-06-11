@@ -69,10 +69,6 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Custom relay server URLs (for iroh transport)
-        #[arg(long)]
-        relay_url: Vec<String>,
-
         /// Disable resumable transfers (don't save partial downloads)
         #[arg(long)]
         no_resume: bool,
@@ -267,7 +263,6 @@ async fn run(command: Commands) -> Result<()> {
         Commands::Receive {
             code,
             output,
-            relay_url,
             no_resume,
         } => {
             // Validate output directory if provided
@@ -300,7 +295,7 @@ async fn run(command: Commands) -> Result<()> {
                 (input, None)
             };
 
-            receive_with_code(&code, output, relay_url, no_resume, pin_info).await?;
+            receive_with_code(&code, output, no_resume, pin_info).await?;
         }
     }
 
@@ -311,7 +306,6 @@ async fn run(command: Commands) -> Result<()> {
 async fn receive_with_code(
     code: &str,
     output: Option<PathBuf>,
-    relay_url: Vec<String>,
     no_resume: bool,
     pin_info: Option<PinInfo>,
 ) -> Result<()> {
@@ -325,20 +319,14 @@ async fn receive_with_code(
         beam::PROTOCOL_IROH => {
             // A no-server code carries an endpoint address with no relay URL
             // (but embedded direct IPs). Detect that and disable relays on the
-            // receiver to match the sender.
+            // receiver to match the sender. Any custom relays the sender used
+            // travel inside the code, so the receiver needs no relay flag.
             let no_server = token
                 .addr
                 .as_ref()
                 .map(|addr| addr.relay.is_none())
                 .unwrap_or(false);
-            if no_server && !relay_url.is_empty() {
-                ui::sink().status(
-                    "Warning: --relay-url is ignored for this beam code: it is a no-server \
-                     code (no relay), so relays are disabled on the receiver to match the sender.",
-                );
-            }
-            iroh_receiver::receive(code, output, relay_url, no_resume, pin_info, no_server)
-                .await?;
+            iroh_receiver::receive(code, output, no_resume, pin_info, no_server).await?;
         }
         beam::PROTOCOL_TOR => {
             anyhow::bail!(

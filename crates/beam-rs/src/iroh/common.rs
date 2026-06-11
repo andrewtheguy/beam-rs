@@ -381,12 +381,22 @@ fn beam_dns_resolver() -> DnsResolver {
 
 /// Create a MinimalAddr from a full EndpointAddr.
 ///
-/// Only the first (currently-selected) relay URL is kept to minimize token size.
+/// The `relay` field keeps only the first (currently-selected) relay URL to
+/// minimize token size — that's the address the receiver dials. The sender's
+/// full set of configured custom relays (`relay_urls`, from `--relay-url`) is
+/// embedded separately so the receiver can configure its own endpoint with the
+/// same custom relay map instead of the default public relays; it is empty when
+/// the sender used the defaults.
+///
 /// IP addresses are normally stripped (they're discovered at connect time via
 /// relay or mDNS), but when `include_ip_addrs` is set — no-server mode — every
 /// direct address iroh discovered (LAN and any public/port-mapped addresses) is
 /// embedded so the receiver can attempt them all without relying on mDNS.
-pub fn minimal_addr_from_endpoint(addr: &EndpointAddr, include_ip_addrs: bool) -> MinimalAddr {
+pub fn minimal_addr_from_endpoint(
+    addr: &EndpointAddr,
+    relay_urls: &[String],
+    include_ip_addrs: bool,
+) -> MinimalAddr {
     let relay = addr.relay_urls().next().map(|r| r.to_string());
     let ip_addrs = if include_ip_addrs {
         addr.ip_addrs().map(|a| a.to_string()).collect()
@@ -396,6 +406,7 @@ pub fn minimal_addr_from_endpoint(addr: &EndpointAddr, include_ip_addrs: bool) -
     MinimalAddr {
         id: addr.id.to_string(),
         relay,
+        relay_urls: relay_urls.to_vec(),
         ip_addrs,
     }
 }
@@ -427,8 +438,17 @@ pub fn minimal_addr_to_endpoint(addr: &MinimalAddr) -> Result<EndpointAddr> {
 ///
 /// In `no_server` mode the endpoint's discovered direct addresses are embedded
 /// in the code so the receiver can connect without depending on mDNS resolution.
-pub fn generate_code(addr: &EndpointAddr, key: &[u8; 32], no_server: bool) -> Result<String> {
-    let minimal_addr = minimal_addr_from_endpoint(addr, no_server);
+///
+/// `relay_urls` is the sender's configured custom relay set (from `--relay-url`,
+/// empty for default relays); it is embedded so the receiver adopts the same
+/// relays without needing them passed on its own command line.
+pub fn generate_code(
+    addr: &EndpointAddr,
+    key: &[u8; 32],
+    relay_urls: &[String],
+    no_server: bool,
+) -> Result<String> {
+    let minimal_addr = minimal_addr_from_endpoint(addr, relay_urls, no_server);
 
     let token = BeamToken {
         version: CURRENT_VERSION,
@@ -456,7 +476,7 @@ mod tests {
         let addr = EndpointAddr::new(SecretKey::generate().public())
             .with_ip_addr("192.168.1.10:4444".parse().unwrap());
 
-        let code = generate_code(&addr, &key, true).unwrap();
+        let code = generate_code(&addr, &key, &[], true).unwrap();
         let token = parse_code(&code).unwrap();
         let minimal_addr = token.addr.unwrap();
 
@@ -472,7 +492,7 @@ mod tests {
         let addr = EndpointAddr::new(SecretKey::generate().public())
             .with_ip_addr("192.168.1.10:4444".parse().unwrap());
 
-        let code = generate_code(&addr, &key, false).unwrap();
+        let code = generate_code(&addr, &key, &[], false).unwrap();
         let token = parse_code(&code).unwrap();
         let minimal_addr = token.addr.unwrap();
 
@@ -480,5 +500,38 @@ mod tests {
         // The empty vec is skipped during serialization to keep tokens compact.
         let serialized = serde_json::to_value(&minimal_addr).unwrap();
         assert!(serialized.get("ip_addrs").is_none());
+    }
+
+    #[test]
+    fn custom_relay_urls_round_trip_through_code() {
+        let key = [42u8; 32];
+        let addr = EndpointAddr::new(SecretKey::generate().public());
+        let relays = vec![
+            "https://relay.example.com".to_string(),
+            "https://relay2.example.com".to_string(),
+        ];
+
+        let code = generate_code(&addr, &key, &relays, false).unwrap();
+        let token = parse_code(&code).unwrap();
+        let minimal_addr = token.addr.unwrap();
+
+        // The sender's configured custom relays travel in the code so the
+        // receiver can adopt them without a CLI flag.
+        assert_eq!(minimal_addr.relay_urls, relays);
+    }
+
+    #[test]
+    fn default_relay_code_omits_relay_urls() {
+        let key = [42u8; 32];
+        let addr = EndpointAddr::new(SecretKey::generate().public());
+
+        let code = generate_code(&addr, &key, &[], false).unwrap();
+        let token = parse_code(&code).unwrap();
+        let minimal_addr = token.addr.unwrap();
+
+        assert!(minimal_addr.relay_urls.is_empty());
+        // The empty vec is skipped during serialization to keep tokens compact.
+        let serialized = serde_json::to_value(&minimal_addr).unwrap();
+        assert!(serialized.get("relay_urls").is_none());
     }
 }

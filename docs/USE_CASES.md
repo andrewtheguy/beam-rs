@@ -119,6 +119,8 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   ```bash
   beam-rs send --relay-url https://my-private-relay.com /path/to/file
   ```
+  The relay is embedded in the beam code, so the receiver adopts it
+  automatically — just run `beam-rs receive`, no relay flag needed.
 
 **Solution B**: **No-server Mode** (No third-party server)
 - **Why**: Relays disabled and no external dependencies; the sender's discovered IPs are embedded in the beam code, with mDNS as a fallback. Works completely offline on a shared LAN.

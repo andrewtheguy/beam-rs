@@ -64,6 +64,14 @@ pub struct MinimalAddr {
     /// to minimize token size for copy/paste usability)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay: Option<String>,
+    /// Custom relay URLs the sender was configured with (via `--relay-url`).
+    ///
+    /// Empty when the sender used the default public relays. When non-empty, the
+    /// receiver configures its own endpoint with these as a custom relay map
+    /// (instead of the default relays), so a self-hosted relay deployment needs no
+    /// relay configuration on the receiver side — the relays travel in the code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relay_urls: Vec<String>,
     /// Direct socket addresses (host:port) for the endpoint.
     ///
     /// Normally empty — direct addresses are discovered at connect time via the
