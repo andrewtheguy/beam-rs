@@ -30,14 +30,14 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 spake2 = "0.4"
 # HTTP client for Nostr relay fetching
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { version = "0.13", features = ["json", "multipart", "stream"] }
 
 # iroh transport
 iroh = "1.0.0-rc.1"
 iroh-mdns-address-lookup = "0.3.0"
 # Used to probe the host DNS config before binding; see beam_dns_resolver.
 # Pinned to the same version iroh pulls in so cargo unifies on one copy.
-hickory-resolver = "0.26.0-beta.4"
+hickory-resolver = "0.26.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 # Crate-specific dependencies
