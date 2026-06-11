@@ -2,10 +2,9 @@
 //!
 //! This module provides functionality for resuming interrupted file transfers.
 //! It uses a temporary file with metadata header to track transfer progress,
-//! and fs4 for cross-platform file locking.
+//! and std file locking (`File::try_lock`) for cross-platform locking.
 
 use anyhow::{Context, Result};
-use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -103,10 +102,10 @@ pub fn calculate_file_checksum_sync(path: &Path) -> Result<u64> {
 /// Try to acquire an exclusive non-blocking lock on a file.
 /// Returns Ok(true) if lock acquired, Ok(false) if file is already locked.
 pub fn try_exclusive_lock(file: &File) -> Result<bool> {
-    match file.try_lock_exclusive() {
+    match file.try_lock() {
         Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
-        Err(e) => Err(e).context("Failed to acquire file lock"),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(std::fs::TryLockError::Error(e)) => Err(e).context("Failed to acquire file lock"),
     }
 }
 
