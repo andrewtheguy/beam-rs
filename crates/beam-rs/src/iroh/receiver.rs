@@ -14,6 +14,7 @@ use beam_common::auth::PinInfo;
 use beam_common::auth::spake2::handshake_as_initiator;
 use beam_common::core::transfer::run_receiver_transfer;
 use beam_common::core::beam::parse_code;
+use beam_common::ui::{self, Phase};
 
 /// Receive a file or folder using a beam code.
 /// Auto-detects whether it's a file or folder transfer based on the header.
@@ -28,7 +29,8 @@ pub async fn receive(
     pin_info: Option<PinInfo>,
     local_only: bool,
 ) -> Result<()> {
-    eprintln!("Parsing beam code...");
+    ui::sink().set_phase(Phase::Connecting);
+    ui::sink().status("Parsing beam code...");
 
     // Parse the beam code
     let token = parse_code(code).context("Failed to parse beam code")?;
@@ -40,7 +42,7 @@ pub async fn receive(
     let addr = minimal_addr_to_endpoint(&minimal_addr)
         .context("Failed to parse endpoint address")?;
 
-    eprintln!("Code valid. Connecting to sender...");
+    ui::sink().status("Code valid. Connecting to sender...");
 
     // Create iroh endpoint
     let endpoint = create_receiver_endpoint(relay_urls, local_only).await?;
@@ -71,8 +73,8 @@ pub async fn receive(
 
     // Print connection info
     let remote_id = conn.remote_id();
-    eprintln!("Connected!");
-    eprintln!("Remote ID: {}", remote_id);
+    ui::sink().status("Connected!");
+    ui::sink().status(&format!("Remote ID: {}", remote_id));
 
     let path_watcher = watch_connection_paths(&conn);
 
@@ -94,7 +96,8 @@ pub async fn receive(
         if ready[0] != 0x01 {
             anyhow::bail!("Invalid ready byte: expected 0x01, got 0x{:02x}", ready[0]);
         }
-        eprintln!("Performing SPAKE2 authentication...");
+        ui::sink().set_phase(Phase::Authenticating);
+        ui::sink().status("Performing SPAKE2 authentication...");
         let mut send_stream_mut = send_stream;
         let mut duplex =
             super::common::IrohDuplex::new(&mut send_stream_mut, &mut recv_stream);
@@ -107,7 +110,7 @@ pub async fn receive(
         .and_then(|r| r.map_err(|e| anyhow::anyhow!("SPAKE2 handshake failed: {}", e)));
         match handshake_result {
             Ok(derived_key) => {
-                eprintln!("SPAKE2 authentication successful!");
+                ui::sink().status("SPAKE2 authentication successful!");
                 (derived_key, send_stream_mut)
             }
             Err(e) => {
@@ -178,7 +181,8 @@ pub async fn receive(
         }
     }
 
-    eprintln!("Connection closed.");
+    ui::sink().set_phase(Phase::Done);
+    ui::sink().status("Connection closed.");
 
     Ok(())
 }

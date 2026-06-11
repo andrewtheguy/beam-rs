@@ -1,4 +1,5 @@
 pub fn print_receiver_command(command: &str) {
-    println!("On the receiving end, run:");
-    println!("  {}\n", command);
+    let sink = beam_common::ui::sink();
+    sink.info("On the receiving end, run:");
+    sink.info(&format!("  {}\n", command));
 }

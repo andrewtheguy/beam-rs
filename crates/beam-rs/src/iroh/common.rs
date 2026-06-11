@@ -174,7 +174,7 @@ pub fn watch_connection_paths(conn: &Connection) -> PathWatcherGuard {
         while let Some(paths) = stream.next().await {
             let formatted = format_paths(&paths);
             if last.as_deref() != Some(formatted.as_str()) {
-                eprintln!("   Connection: {}", formatted);
+                beam_common::ui::sink().status(&format!("   Connection: {}", formatted));
                 last = Some(formatted);
             }
         }

@@ -80,52 +80,33 @@ pub fn generate_pin() -> String {
 /// Loops on invalid PIN, pre-filling with the previous input so user can edit it.
 /// Returns the validated PIN or an error if input fails.
 pub fn prompt_pin() -> std::io::Result<String> {
-    use rustyline::DefaultEditor;
-
-    let mut rl = DefaultEditor::new().map_err(|e| std::io::Error::other(e.to_string()))?;
+    use crate::ui::sink;
 
     let mut last_input: Option<String> = None;
 
     loop {
-        let readline = if let Some(ref prev) = last_input {
-            rl.readline_with_initial("Enter corrected PIN: ", (prev, ""))
-        } else {
-            rl.readline("Enter PIN: ")
+        let (prompt, initial) = match &last_input {
+            Some(prev) => ("Enter corrected PIN: ", prev.as_str()),
+            None => ("Enter PIN: ", ""),
         };
 
-        match readline {
-            Ok(line) => {
-                let pin = line.trim().to_string();
+        let line = sink()
+            .prompt_line(prompt, initial)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let pin = line.trim().to_string();
 
-                if pin.is_empty() {
-                    println!("PIN cannot be empty.");
-                    continue;
-                }
-
-                if !validate_pin(&pin) {
-                    println!("Invalid PIN format or checksum.");
-                    last_input = Some(pin);
-                    continue;
-                }
-
-                return Ok(pin);
-            }
-            Err(rustyline::error::ReadlineError::Interrupted) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "Interrupted",
-                ));
-            }
-            Err(rustyline::error::ReadlineError::Eof) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "EOF",
-                ));
-            }
-            Err(e) => {
-                return Err(std::io::Error::other(e.to_string()));
-            }
+        if pin.is_empty() {
+            sink().info("PIN cannot be empty.");
+            continue;
         }
+
+        if !validate_pin(&pin) {
+            sink().info("Invalid PIN format or checksum.");
+            last_input = Some(pin);
+            continue;
+        }
+
+        return Ok(pin);
     }
 }
 

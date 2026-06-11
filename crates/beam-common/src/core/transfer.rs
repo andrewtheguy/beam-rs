@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::core::crypto::{CHUNK_SIZE, decrypt, encrypt};
 use crate::core::folder::{create_tar_archive, print_tar_creation_info};
 use crate::core::resume::calculate_file_checksum;
+use crate::ui::{self, Direction, Progress};
 
 /// Error returned when a transfer is interrupted by Ctrl+C.
 ///
@@ -426,23 +427,10 @@ pub async fn confirm_large_folder_transfer(file_size: u64, filename: &str) -> Re
 
     // Capture values needed in the blocking closure
     let filename = filename.to_string();
-    let size_str = format_bytes(file_size);
 
-    tokio::task::spawn_blocking(move || {
-        println!("\n⚠️  Warning: {} is large ({}).", filename, size_str);
-        println!("Folder transfers are NOT resumable. If interrupted, you must start over.");
-        println!(
-            "Large folders are recommended for local connections only (beam-rs send --local-only)."
-        );
-        print!("Continue anyway? [y/N]: ");
-        std::io::stdout().flush()?;
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        Ok(input.trim().eq_ignore_ascii_case("y"))
-    })
-    .await
-    .context("Blocking task panicked")?
+    tokio::task::spawn_blocking(move || ui::sink().confirm_large_folder(file_size, &filename))
+        .await
+        .context("Blocking task panicked")?
 }
 
 /// Result of preparing a file for transfer
@@ -467,14 +455,14 @@ pub async fn prepare_file_for_send(file_path: &Path) -> Result<Option<PreparedFi
         .context("Invalid filename")?
         .to_string();
 
-    println!(
+    ui::sink().info(&format!(
         "📁 Preparing to send: {} ({})",
         filename,
         format_bytes(file_size)
-    );
+    ));
 
     // Calculate checksum for resumable transfers
-    println!("   Calculating checksum...");
+    ui::sink().info("   Calculating checksum...");
     let checksum = calculate_file_checksum(file_path)
         .await
         .context("Failed to calculate file checksum")?;
@@ -524,7 +512,7 @@ pub async fn prepare_folder_for_send(folder_path: &Path) -> Result<Option<Prepar
         anyhow::bail!("Invalid folder name: empty");
     }
 
-    println!("📁 Creating tar archive of: {}", folder_name);
+    ui::sink().info(&format!("📁 Creating tar archive of: {}", folder_name));
     print_tar_creation_info();
 
     // Create tar archive
@@ -532,15 +520,15 @@ pub async fn prepare_folder_for_send(folder_path: &Path) -> Result<Option<Prepar
     let filename = tar_archive.filename;
     let file_size = tar_archive.file_size;
 
-    println!(
+    ui::sink().info(&format!(
         "📦 Archive created: {} ({})",
         filename,
         format_bytes(file_size)
-    );
+    ));
 
     // Confirm if archive is large (folders are NOT resumable)
     if !confirm_large_folder_transfer(file_size, &filename).await? {
-        println!("Transfer cancelled.");
+        ui::sink().info("Transfer cancelled.");
         return Ok(None);
     }
 
@@ -925,23 +913,7 @@ pub fn find_available_filename(path: &Path) -> PathBuf {
 /// Prompt user for choice when file already exists.
 /// Returns the user's choice (overwrite, rename, or cancel).
 pub fn prompt_file_exists(path: &Path) -> Result<FileExistsChoice> {
-    let display_path = path.display().to_string();
-
-    print!(
-        "⚠️  File exists: {}\n[o]verwrite / [r]ename / [c]ancel: ",
-        display_path
-    );
-    std::io::stdout().flush()?;
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-
-    let choice = input.trim().to_lowercase();
-    match choice.as_str() {
-        "o" | "overwrite" => Ok(FileExistsChoice::Overwrite),
-        "r" | "rename" => Ok(FileExistsChoice::Rename),
-        _ => Ok(FileExistsChoice::Cancel),
-    }
+    ui::sink().prompt_file_exists(path)
 }
 
 // ============================================================================
@@ -975,10 +947,10 @@ pub async fn handle_receiver_response<R: AsyncReadExt + Unpin>(
         ControlSignal::Proceed => Ok(ResumeResponse::Fresh),
         ControlSignal::Resume(offset) => {
             let starting_chunk = offset / CHUNK_SIZE as u64 + 1;
-            eprintln!(
+            ui::sink().status(&format!(
                 "   Resuming from byte offset {} (chunk {})",
                 offset, starting_chunk
-            );
+            ));
             Ok(ResumeResponse::Resume {
                 offset,
                 starting_chunk,
@@ -1017,21 +989,17 @@ pub async fn send_file_data<R: AsyncReadExt + Unpin, W: AsyncWriteExt + Unpin>(
         if progress_interval > 0
             && (chunk_num.is_multiple_of(progress_interval) || bytes_sent == file_size)
         {
-            let percent = calc_percent(bytes_sent, file_size) as u32;
-            eprint!(
-                "\r   Progress: {}% ({}/{}) - chunk {}/{}",
-                percent,
-                format_bytes(bytes_sent),
-                format_bytes(file_size),
-                chunk_num - 1,
-                total_chunks
-            );
-            let _ = std::io::stderr().flush();
+            ui::sink().progress(Progress {
+                dir: Direction::Send,
+                bytes: bytes_sent,
+                total: file_size,
+                chunk: Some((chunk_num - 1, total_chunks)),
+            });
         }
     }
 
     if progress_interval > 0 {
-        eprintln!(); // New line after progress
+        ui::sink().progress_end(); // New line after progress
     }
 
     Ok(())
@@ -1096,11 +1064,11 @@ pub fn prepare_file_receiver(
             // Valid temp file found, resume transfer
             let bytes_received = resume_check.metadata.bytes_received;
             let data_offset = resume_check.data_offset;
-            eprintln!(
+            ui::sink().status(&format!(
                 "   Found partial download: {} of {} received",
                 format_bytes(bytes_received),
                 format_bytes(header.file_size)
-            );
+            ));
 
             Ok((
                 FileReceiver {
@@ -1191,19 +1159,17 @@ pub async fn receive_file_data<R: AsyncReadExt + Unpin>(
         if progress_interval > 0
             && (chunk_num.is_multiple_of(progress_interval) || receiver.bytes_received == file_size)
         {
-            let percent = calc_percent(receiver.bytes_received, file_size) as u32;
-            eprint!(
-                "\r   Progress: {}% ({}/{})",
-                percent,
-                format_bytes(receiver.bytes_received),
-                format_bytes(file_size)
-            );
-            let _ = std::io::stderr().flush();
+            ui::sink().progress(Progress {
+                dir: Direction::Receive,
+                bytes: receiver.bytes_received,
+                total: file_size,
+                chunk: None,
+            });
         }
     }
 
     if progress_interval > 0 {
-        eprintln!(); // New line after progress
+        ui::sink().progress_end(); // New line after progress
     }
 
     // Final metadata update
@@ -1260,23 +1226,23 @@ fn spawn_cleanup_handler(path: PathBuf, action: CleanupAction) -> CleanupHandler
                 CleanupAction::RemoveFile => {
                     if let Some(path) = cleanup_clone.lock().await.take() {
                         let _ = tokio::fs::remove_file(&path).await;
-                        eprintln!("\nInterrupted. Cleaned up temp file.");
+                        ui::sink().status("\nInterrupted. Cleaned up temp file.");
                     }
                 }
                 CleanupAction::RemoveDir => {
                     if let Some(path) = cleanup_clone.lock().await.take() {
                         let _ = tokio::fs::remove_dir_all(&path).await;
-                        eprintln!("\nInterrupted. Cleaned up extraction directory.");
+                        ui::sink().status("\nInterrupted. Cleaned up extraction directory.");
                     }
                 }
                 CleanupAction::ResumableFile { is_resumable } => {
                     if !is_resumable {
                         if let Some(path) = cleanup_clone.lock().await.take() {
                             let _ = tokio::fs::remove_file(&path).await;
-                            eprintln!("\nInterrupted. Cleaned up temp file.");
+                            ui::sink().status("\nInterrupted. Cleaned up temp file.");
                         }
                     } else {
-                        eprintln!("\nInterrupted. Partial download saved for resume.");
+                        ui::sink().status("\nInterrupted. Partial download saved for resume.");
                     }
                 }
             }
@@ -1404,19 +1370,19 @@ where
         .context("Failed to send header")?;
 
     // 2. Wait for receiver response
-    eprintln!("Waiting for receiver to confirm...");
+    ui::sink().status("Waiting for receiver to confirm...");
     let start_offset = match handle_receiver_response(stream, key).await? {
         ResumeResponse::Fresh => {
-            eprintln!("Receiver ready, starting transfer...");
+            ui::sink().status("Receiver ready, starting transfer...");
             0
         }
         ResumeResponse::Resume { offset, .. } => {
-            eprintln!("{}", format_resume_progress(offset, header.file_size));
+            ui::sink().status(&format_resume_progress(offset, header.file_size));
             file.seek(SeekFrom::Start(offset)).await?;
             offset
         }
         ResumeResponse::Aborted => {
-            eprintln!("Receiver declined transfer");
+            ui::sink().status("Receiver declined transfer");
             return Ok(TransferResult::Aborted);
         }
     };
@@ -1427,10 +1393,10 @@ where
     // 4. Flush stream (important for TCP-based transports)
     stream.flush().await.context("Failed to flush stream")?;
 
-    eprintln!("\nTransfer complete!");
+    ui::sink().status("\nTransfer complete!");
 
     // 5. Wait for ACK (with optional timeout)
-    eprintln!("Waiting for receiver to confirm...");
+    ui::sink().status("Waiting for receiver to confirm...");
 
     let ack_result = match ack_timeout {
         Some(timeout) => {
@@ -1438,7 +1404,7 @@ where
                 Ok(result) => result,
                 Err(_) => {
                     // Timeout - consider transfer successful (data was sent)
-                    eprintln!("Connection closed (transfer completed)");
+                    ui::sink().status("Connection closed (transfer completed)");
                     return Ok(TransferResult::Success);
                 }
             }
@@ -1448,14 +1414,14 @@ where
 
     match ack_result {
         Ok(ControlSignal::Ack) => {
-            eprintln!("Receiver confirmed!");
+            ui::sink().status("Receiver confirmed!");
             Ok(TransferResult::Success)
         }
         Ok(other) => anyhow::bail!("Expected ACK, got {:?}", other),
         Err(e) => {
             // For unreliable transports, connection errors after data sent are acceptable
             if ack_timeout.is_some() {
-                eprintln!("Connection closed (transfer completed)");
+                ui::sink().status("Connection closed (transfer completed)");
                 Ok(TransferResult::Success)
             } else {
                 Err(e).context("Failed to receive ACK")
@@ -1506,11 +1472,11 @@ where
         .await
         .context("Failed to read header")?;
 
-    eprintln!(
+    ui::sink().status(&format!(
         "Receiving: {} ({})",
         header.filename,
         format_bytes(header.file_size)
-    );
+    ));
 
     let output_dir = output_dir.unwrap_or_else(|| PathBuf::from("."));
 
@@ -1568,7 +1534,7 @@ where
             }
             FileExistsChoice::Rename => {
                 let new_path = find_available_filename(&output_path);
-                eprintln!("Will save as: {}", new_path.display());
+                ui::sink().status(&format!("Will save as: {}", new_path.display()));
                 new_path
             }
             FileExistsChoice::Cancel => {
@@ -1597,13 +1563,13 @@ where
             send_proceed(stream, key)
                 .await
                 .context("Failed to send proceed signal")?;
-            eprintln!("Ready to receive data...");
+            ui::sink().status("Ready to receive data...");
         }
         ControlSignal::Resume(offset) => {
             send_resume(stream, key, *offset)
                 .await
                 .context("Failed to send resume signal")?;
-            eprintln!("{}", format_resume_progress(*offset, header.file_size));
+            ui::sink().status(&format_resume_progress(*offset, header.file_size));
         }
         other => anyhow::bail!(
             "Unexpected control signal from prepare_file_receiver: {:?}",
@@ -1626,8 +1592,8 @@ where
     cleanup_handler.cleanup_path.lock().await.take();
     finalize_file_receiver(receiver)?;
 
-    eprintln!("\nFile received successfully!");
-    eprintln!("Saved to: {}", final_output_path.display());
+    ui::sink().status("\nFile received successfully!");
+    ui::sink().status(&format!("Saved to: {}", final_output_path.display()));
 
     // Send ACK
     send_ack(stream, key)
@@ -1648,17 +1614,17 @@ async fn receive_folder_transfer_impl<S>(
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
 {
-    eprintln!(
+    ui::sink().status(&format!(
         "Receiving folder archive: {} ({})",
         header.filename,
         format_bytes(header.file_size)
-    );
+    ));
 
     // Folders are not resumable, always send proceed
     send_proceed(&mut stream, key)
         .await
         .context("Failed to send proceed signal")?;
-    eprintln!("Ready to receive data...");
+    ui::sink().status("Ready to receive data...");
 
     // Determine extraction directory
     let extract_dir = get_extraction_dir(Some(output_dir.to_path_buf()));
@@ -1667,7 +1633,7 @@ where
     // Set up cleanup handler
     let cleanup_handler = setup_dir_cleanup_handler(extract_dir.clone());
 
-    eprintln!("Extracting to: {}", extract_dir.display());
+    ui::sink().status(&format!("Extracting to: {}", extract_dir.display()));
     print_tar_extraction_info();
 
     // Get runtime handle for blocking in StreamingReader
@@ -1697,8 +1663,8 @@ where
     // Clear cleanup
     cleanup_handler.cleanup_path.lock().await.take();
 
-    eprintln!("\nFolder received successfully!");
-    eprintln!("Extracted to: {}", extract_dir.display());
+    ui::sink().status("\nFolder received successfully!");
+    ui::sink().status(&format!("Extracted to: {}", extract_dir.display()));
 
     // Get stream back and send ACK
     // Validate that all expected bytes were received before sending ACK

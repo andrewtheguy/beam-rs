@@ -1,12 +1,12 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
 use beam_common::auth::PinInfo;
 use beam_common::core::transfer::is_interrupted;
 use beam_common::core::beam;
+use beam_common::ui;
 
 mod iroh;
 use iroh::{receiver as iroh_receiver, sender as iroh_sender};
@@ -18,6 +18,11 @@ mod cli;
 #[command(about = "Secure peer-to-peer file transfer")]
 #[command(version)]
 struct Cli {
+    /// Disable the interactive terminal UI and use plain line output.
+    /// The TUI is also auto-disabled when stdout/stderr is not a terminal.
+    #[arg(long, global = true)]
+    no_tui: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -128,6 +133,31 @@ fn main() {
 }
 
 async fn async_main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Start the inline TUI (if applicable) and install its sink. Honors
+    // --no-tui and the terminal auto-detect; returns None in plain mode (or if
+    // the inline viewport can't be initialized), leaving the plain sink in place.
+    let tui_handle = beam_common::tui::decide_and_install(cli.no_tui);
+
+    // Only discard tracing once the TUI is actually active — otherwise a failed
+    // TUI init would silently drop logs with no viewport to show status. Set up
+    // tracing after installing the sink so the flag reflects the real state.
+    init_tracing(tui_handle.is_some());
+
+    let result = run(cli.command).await;
+
+    // Always restore the terminal before propagating the result/error.
+    if let Some(handle) = tui_handle {
+        handle.finish();
+    }
+
+    result
+}
+
+/// Set up the tracing subscriber. When `discard` is true (TUI mode) all log
+/// output is sent to a sink so it does not interfere with the inline viewport.
+fn init_tracing(discard: bool) {
     // Set up tracing subscriber with filters for noisy iroh internals
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new("info")
@@ -144,15 +174,21 @@ async fn async_main() -> Result<()> {
             .add_directive("quinn_proto=warn".parse().unwrap())
     });
 
-    tracing_subscriber::fmt()
+    let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
-        .without_time()
-        .init();
+        .without_time();
 
-    let cli = Cli::parse();
+    if discard {
+        builder.with_writer(std::io::sink).init();
+    } else {
+        builder.init();
+    }
+}
 
-    match cli.command {
+/// Dispatch the parsed CLI command.
+async fn run(command: Commands) -> Result<()> {
+    match command {
         Commands::Send {
             path,
             folder,
@@ -194,7 +230,7 @@ async fn async_main() -> Result<()> {
             let pin_info = if pin {
                 let pin_str = beam_common::auth::pin::prompt_pin()?;
 
-                eprintln!("Searching for beam token via Nostr...");
+                ui::sink().status("Searching for beam token via Nostr...");
 
                 // Fetch encrypted token from Nostr
                 let result = tokio::time::timeout(
@@ -207,7 +243,7 @@ async fn async_main() -> Result<()> {
                         "Timeout: Failed to retrieve beam code from Nostr after 30 seconds"
                     )
                 })??;
-                eprintln!("Token found and decrypted!");
+                ui::sink().status("Token found and decrypted!");
                 code = Some(result.code);
                 Some(PinInfo { pin: pin_str, transfer_id: result.transfer_id })
             } else {
@@ -217,13 +253,7 @@ async fn async_main() -> Result<()> {
             // Get code from argument or prompt
             let code = match code {
                 Some(c) => c,
-                None => {
-                    print!("Enter beam code: ");
-                    io::stdout().flush()?;
-                    let mut input = String::new();
-                    io::stdin().read_line(&mut input)?;
-                    input.trim().to_string()
-                }
+                None => ui::sink().prompt_line("Enter beam code: ", "")?.trim().to_string(),
             };
 
             receive_with_code(&code, output, relay_url, no_resume, pin_info).await?;

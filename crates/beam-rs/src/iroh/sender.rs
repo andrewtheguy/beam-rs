@@ -9,6 +9,7 @@ use crate::cli::instructions::print_receiver_command;
 use beam_common::auth::PinInfo;
 use beam_common::auth::spake2::handshake_as_responder;
 use beam_common::core::crypto::generate_key;
+use beam_common::ui::{self, Phase};
 use beam_common::core::transfer::{
     FileHeader, Interrupted, TransferResult, TransferType, run_sender_transfer, send_file_with,
     send_folder_with,
@@ -118,7 +119,7 @@ async fn transfer_data_internal(
         print_receiver_command("beam-rs receive");
     }
 
-    println!("\n🔮 Beam code:\n{}\n", code);
+    ui::sink().show_code(&code);
 
     let pin_info = if use_pin {
         // Generate ephemeral keys for PIN exchange
@@ -132,15 +133,16 @@ async fn transfer_data_internal(
         )
         .await?;
 
-        println!("🔢 PIN: {}\n", pin);
-        println!("Then enter the PIN above when prompted.\n");
+        ui::sink().show_pin(&pin);
+        ui::sink().info("Then enter the PIN above when prompted.\n");
         Some(PinInfo { pin, transfer_id })
     } else {
-        println!("Then enter the code above when prompted.\n");
+        ui::sink().info("Then enter the code above when prompted.\n");
         None
     };
 
-    eprintln!("Waiting for receiver to connect...");
+    ui::sink().set_phase(Phase::Waiting);
+    ui::sink().status("Waiting for receiver to connect...");
 
     // Wait for connection
     let conn = endpoint
@@ -175,8 +177,9 @@ async fn transfer_data_internal(
         })?;
 
     let remote_id = conn.remote_id();
-    eprintln!("Receiver connected!");
-    eprintln!("   Remote ID: {}", remote_id);
+    ui::sink().set_phase(Phase::Connecting);
+    ui::sink().status("Receiver connected!");
+    ui::sink().status(&format!("   Remote ID: {}", remote_id));
 
     let path_watcher = watch_connection_paths(&conn);
 
@@ -187,7 +190,8 @@ async fn transfer_data_internal(
     // Perform SPAKE2 handshake if PIN mode is active (sender = responder)
     let key = if let Some(ref pin_info) = pin_info {
         let (pin, transfer_id) = (&pin_info.pin, &pin_info.transfer_id);
-        eprintln!("Performing SPAKE2 authentication...");
+        ui::sink().set_phase(Phase::Authenticating);
+        ui::sink().status("Performing SPAKE2 authentication...");
         // Write a "ready" byte to materialize the QUIC stream on the receiver side.
         // In QUIC, open_bi() allocates the stream locally but may not send a STREAM
         // frame until data is written. Since SPAKE2 responder reads first, without
@@ -203,7 +207,7 @@ async fn transfer_data_internal(
         .and_then(|r| r.map_err(|e| anyhow::anyhow!("SPAKE2 handshake failed: {}", e)));
         match handshake_result {
             Ok(derived_key) => {
-                eprintln!("SPAKE2 authentication successful!");
+                ui::sink().status("SPAKE2 authentication successful!");
                 derived_key
             }
             Err(e) => {
@@ -228,7 +232,7 @@ async fn transfer_data_internal(
             result = run_sender_transfer(&mut file, &mut duplex, &key, &header) => result,
             _ = shutdown_rx => {
                 // Graceful shutdown requested - notify receiver and close connection
-                eprintln!("\nShutdown requested, cancelling transfer...");
+                ui::sink().status("\nShutdown requested, cancelling transfer...");
                 drop(path_watcher);
                 conn.close(close_codes::CANCELLED, b"cancelled");
                 endpoint.close().await;
@@ -274,7 +278,8 @@ async fn transfer_data_internal(
     // Propagate finish error after cleanup
     finish_result?;
 
-    eprintln!("Connection closed.");
+    ui::sink().set_phase(Phase::Done);
+    ui::sink().status("Connection closed.");
 
     Ok(())
 }

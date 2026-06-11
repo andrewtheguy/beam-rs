@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Common library
-beam-common = { path = "../beam-common", features = ["nostr"] }
+beam-common = { path = "../beam-common", features = ["nostr", "tui"] }
 
 # Core dependencies (workspace)
 tokio = { workspace = true }

@@ -421,23 +421,25 @@ fn is_path_within_dir(target: &Path, base: &Path) -> bool {
 
 /// Print folder creation info messages.
 pub fn print_tar_creation_info() {
+    let sink = crate::ui::sink();
     #[cfg(unix)]
-    eprintln!("   File modes (e.g., 0755) will be preserved; owner/group will not.");
+    sink.status("   File modes (e.g., 0755) will be preserved; owner/group will not.");
     #[cfg(windows)]
-    eprintln!("   Note: Windows does not support Unix file modes.");
-    eprintln!("   Symlinks are included; special files (devices, FIFOs) are skipped.");
+    sink.status("   Note: Windows does not support Unix file modes.");
+    sink.status("   Symlinks are included; special files (devices, FIFOs) are skipped.");
 }
 
 /// Print folder extraction info messages.
 pub fn print_tar_extraction_info() {
+    let sink = crate::ui::sink();
     #[cfg(unix)]
-    eprintln!("   File modes (e.g., 0755) will be preserved; owner/group will not.");
+    sink.status("   File modes (e.g., 0755) will be preserved; owner/group will not.");
     #[cfg(windows)]
     {
-        eprintln!("   Note: Unix file modes are not supported on Windows.");
-        eprintln!("   Symlinks require admin privileges and may be skipped.");
+        sink.status("   Note: Unix file modes are not supported on Windows.");
+        sink.status("   Symlinks require admin privileges and may be skipped.");
     }
-    eprintln!("   Special files (devices, FIFOs) will be skipped if present.");
+    sink.status("   Special files (devices, FIFOs) will be skipped if present.");
 }
 
 /// Determine the extraction directory for a folder transfer.
@@ -467,12 +469,13 @@ pub fn get_extraction_dir(output_dir: Option<PathBuf>) -> PathBuf {
 /// Print skipped entries warning if any were skipped during extraction.
 pub fn print_skipped_entries(skipped_entries: &[String]) {
     if !skipped_entries.is_empty() {
-        eprintln!(
+        let sink = crate::ui::sink();
+        sink.status(&format!(
             "\n⚠️  Skipped {} entries (not supported on this platform):",
             skipped_entries.len()
-        );
+        ));
         for entry in skipped_entries {
-            eprintln!("   - {}", entry);
+            sink.status(&format!("   - {}", entry));
         }
     }
 }
