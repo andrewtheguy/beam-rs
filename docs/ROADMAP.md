@@ -15,7 +15,7 @@ Ideas and feature requests for future consideration.
   - Could be *implied* by the existing `--no-tui` flag (which already means "no interactive terminal"), rather than a new dedicated flag.
   - Or an explicit flag (e.g. reading the code/PIN from stdin: `echo <CODE> | beam-rs receive`). Stdin keeps the secret out of `argv` (avoids leaking into process listings / shell history).
   - Decision deferred until the whole flow is designed together.
-- **Applies to:** both `beam-rs` and `beam-rs-tor`.
+- **Applies to:** both the iroh and Tor (`--tor`) transports of `beam-rs`.
 - **Also in scope for that effort:** user-facing documentation for non-interactive usage (not written yet).
 - **Status:** Deferred — design only when the larger prompt/flow refactor is taken up.
 
@@ -29,11 +29,11 @@ Ideas and feature requests for future consideration.
   - `--no-server` — no third-party server (relays/Nostr disabled), primarily for same-LAN transfers.
   - `--relay-url` — custom relay servers.
 - **Should encode the constraints:** e.g. `--no-server` is mutually exclusive with `--pin` and `--relay-url`, so the wizard should prevent invalid combinations rather than erroring after the fact.
-- **Builds on:** the existing inline TUI (the `tui` feature in `beam-common`); honors `--no-tui` (wizard disabled / falls back to flags when there's no interactive terminal).
+- **Builds on:** the existing inline TUI (the `tui` module in `beam-rs`); honors `--no-tui` (wizard disabled / falls back to flags when there's no interactive terminal).
 
 ### Browser-Accessible Tor Downloads
 **Domain:** Tor Mode
-- **Feature:** Enable `beam-rs-tor send` to serve files via standard HTTP over the Onion network.
+- **Feature:** Enable `beam-rs send --tor` to serve files via standard HTTP over the Onion network.
 - **Benefit:** Allows receivers to download files using just the **Tor Browser**, eliminating the need to install the `beam-rs` CLI on the receiving machine.
 
 ### Zero-Config mDNS Discovery (browse + PIN)

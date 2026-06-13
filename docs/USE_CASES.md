@@ -81,7 +81,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 - **Why**: When you need anonymous transfers where neither party's IP is revealed. Uses Tor hidden services.
 - **Command**:
   ```bash
-  beam-rs-tor send /path/to/file
+  beam-rs send --tor /path/to/file
   ```
 
 ---
@@ -89,11 +89,11 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 ## 5. Maximum Anonymity
 **Scenario**: You want to transfer a file without revealing your IP address to the peer or any relay servers.
 
-**Solution**: **Tor Mode** (`beam-rs-tor send`)
+**Solution**: **Tor Mode** (`beam-rs send --tor`)
 - **Why**: Creates a Tor Hidden Service for the transfer. Traffic is routed through the Tor network, masking locations of both parties.
 - **Command**:
   ```bash
-  beam-rs-tor send /path/to/file
+  beam-rs send --tor /path/to/file
   ```
 
 ---

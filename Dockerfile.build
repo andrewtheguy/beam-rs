@@ -5,21 +5,19 @@ ARG TARGETPLATFORM
 
 WORKDIR /build
 
-# Copy workspace manifests and lockfile
+# Copy manifest and lockfile
 COPY Cargo.toml Cargo.lock ./
 
-# Copy all workspace crates
-COPY crates ./crates
+# Copy the crate source
+COPY src ./src
 
 # Build for the target platform with per-platform cargo cache mounts
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-${TARGETPLATFORM} \
     --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git-${TARGETPLATFORM} \
     --mount=type=cache,target=/build/target,id=cargo-target-${TARGETPLATFORM} \
-    cargo build --release --all-features -p beam-rs -p beam-rs-tor && \
-    cp target/release/beam-rs /beam-rs && \
-    cp target/release/beam-rs-tor /beam-rs-tor
+    cargo build --release --all-features && \
+    cp target/release/beam-rs /beam-rs
 
-# Export stage - only contains the binaries
+# Export stage - only contains the binary
 FROM scratch AS export
 COPY --from=builder /beam-rs /beam-rs
-COPY --from=builder /beam-rs-tor /beam-rs-tor

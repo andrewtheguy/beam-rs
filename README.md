@@ -13,7 +13,7 @@ A secure, cross-platform, single-binary peer-to-peer file transfer tool with dir
 - **Multiple transport modes** - iroh (recommended) and Tor
 - **Serverless transfers** - direct transfers with no third-party server; all discovered IPs (LAN and public) are embedded in the beam code, with mDNS as a fallback (`beam-rs send --no-server`)
 - **NAT traversal** - Automatic relay fallback for iroh
-- **Anonymous transfers** - Tor hidden services via `beam-rs-tor` for anonymity
+- **Anonymous transfers** - Tor hidden services via `beam-rs send --tor` for anonymity
 - **Cross-platform** - Standalone binary for macOS, Linux, and Windows
 
 ## Installation
@@ -55,11 +55,8 @@ $env:BEAM_INSTALL_ARGS='20251210172710'; irm https://andrewtheguy.github.io/beam
 ### From Source
 
 ```bash
-# Main binary (iroh transport)
+# Single binary with both the iroh and Tor transports
 cargo build --release
-
-# Tor binary (separate crate, anonymous transfers)
-cargo build --release -p beam-rs-tor
 ```
 
 ## Usage
@@ -89,16 +86,16 @@ beam-rs send /path/to/folder --folder
     ```
 - Multiple `--relay-url` flags are supported for failover.
 
-#### 2. Tor Mode - `beam-rs-tor send`
+#### 2. Tor Mode - `send --tor`
 *Anonymous transfers via Tor hidden services. Use when anonymity is required.*
-> Built as a separate binary: `cargo build -p beam-rs-tor`.
 
 ```bash
-beam-rs-tor send /path/to/file
+beam-rs send --tor /path/to/file
 ```
 
 #### Receiving (Internet)
-`beam-rs receive` receives iroh codes and `beam-rs-tor receive` receives Tor codes.
+`beam-rs receive` handles both iroh and Tor codes — the transport is auto-detected
+from the beam code.
 
 ```bash
 beam-rs receive
@@ -168,7 +165,7 @@ All modes provide end-to-end encryption.
 |------|------|--------------|---------------------|-------------------|
 | iroh | Internet | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
 | iroh (`--no-server`) | Direct (LAN/public) | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
-| Tor (`beam-rs-tor`) | Internet | Beam Code | Tor circuits | AES-256-GCM |
+| Tor (`send --tor`) | Internet | Beam Code | Tor circuits | AES-256-GCM |
 
 All modes use dual-layer encryption (transport + content). `--no-server` is the
 same iroh transport with relays disabled, so it keeps QUIC/TLS 1.3 on the wire.

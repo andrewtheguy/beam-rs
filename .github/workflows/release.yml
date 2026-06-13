@@ -18,7 +18,7 @@ jobs:
       - name: Determine version
         id: version
         run: |
-          version=$(python3 -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text())['workspace']['package']['version'])")
+          version=$(python3 -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version'])")
           echo "new=$version" >> "$GITHUB_OUTPUT"
           if [ "${{ github.ref }}" != "refs/heads/main" ]; then
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
@@ -84,15 +84,6 @@ jobs:
           name: release-${{ matrix.suffix }}
           path: target/release/beam-rs-${{ matrix.suffix }}
 
-      - name: Rename Tor Binary
-        run: mv target/${{ matrix.target }}/release/beam-rs-tor target/release/beam-rs-tor-${{ matrix.suffix }}
-
-      - name: Upload Tor release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-tor-${{ matrix.suffix }}
-          path: target/release/beam-rs-tor-${{ matrix.suffix }}
-
   build-macos:
     needs: setup
     strategy:
@@ -122,15 +113,6 @@ jobs:
           name: release-${{ matrix.suffix }}
           path: target/release/beam-rs-${{ matrix.suffix }}
 
-      - name: Rename Tor Binary
-        run: mv target/${{ matrix.target }}/release/beam-rs-tor target/release/beam-rs-tor-${{ matrix.suffix }}
-
-      - name: Upload Tor release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-tor-${{ matrix.suffix }}
-          path: target/release/beam-rs-tor-${{ matrix.suffix }}
-
   build-windows:
     needs: setup
     # Windows binaries are only built for stable (non-prerelease) releases.
@@ -158,15 +140,6 @@ jobs:
         with:
           name: release-${{ env.SUFFIX }}
           path: target/release/beam-rs-${{ env.SUFFIX }}.exe
-
-      - name: Rename Tor Binary
-        run: move target\${{ env.TARGET }}\release\beam-rs-tor.exe target\release\beam-rs-tor-${{ env.SUFFIX }}.exe
-
-      - name: Upload Tor release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-tor-${{ env.SUFFIX }}
-          path: target/release/beam-rs-tor-${{ env.SUFFIX }}.exe
 
   create-release:
     needs: [setup, build-linux, build-macos, build-windows]
