@@ -51,7 +51,7 @@ use rand::RngCore;
 use tokio::time::Duration;
 
 use crate::auth::pin::{PIN_LENGTH, generate_pin};
-use beam_common::core::beam::SESSION_TTL_SECS;
+use beam_rs::core::beam::SESSION_TTL_SECS;
 
 /// Result of fetching a beam code via PIN exchange.
 pub struct PinExchangeResult {

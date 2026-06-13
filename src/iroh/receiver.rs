@@ -12,9 +12,9 @@ use super::common::{
 };
 use crate::auth::PinInfo;
 use crate::auth::spake2::handshake_as_initiator;
-use beam_common::core::transfer::run_receiver_transfer;
-use beam_common::core::beam::parse_code;
-use beam_common::ui::{self, Phase};
+use beam_rs::core::transfer::run_receiver_transfer;
+use beam_rs::core::beam::parse_code;
+use beam_rs::ui::{self, Phase};
 
 /// Receive a file or folder using a beam code.
 /// Auto-detects whether it's a file or folder transfer based on the header.
@@ -33,7 +33,7 @@ pub async fn receive(
 
     // Parse the beam code
     let token = parse_code(code).context("Failed to parse beam code")?;
-    let key = beam_common::core::beam::decode_key(&token.key)
+    let key = beam_rs::core::beam::decode_key(&token.key)
         .context("Failed to decode encryption key")?;
     let minimal_addr = token
         .addr

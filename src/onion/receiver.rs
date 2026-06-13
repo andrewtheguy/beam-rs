@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::timeout;
 
-use beam_common::core::transfer::run_receiver_transfer;
-use beam_common::core::beam::{PROTOCOL_TOR, decode_key, parse_code};
-use beam_common::ui::{self, Phase};
+use beam_rs::core::transfer::run_receiver_transfer;
+use beam_rs::core::beam::{PROTOCOL_TOR, decode_key, parse_code};
+use beam_rs::ui::{self, Phase};
 
 const MAX_RETRIES: u32 = 5;
 const RETRY_DELAY_SECS: u64 = 5;

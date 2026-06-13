@@ -29,7 +29,7 @@ Ideas and feature requests for future consideration.
   - `--no-server` — no third-party server (relays/Nostr disabled), primarily for same-LAN transfers.
   - `--relay-url` — custom relay servers.
 - **Should encode the constraints:** e.g. `--no-server` is mutually exclusive with `--pin` and `--relay-url`, so the wizard should prevent invalid combinations rather than erroring after the fact.
-- **Builds on:** the existing inline TUI (the `tui` feature in `beam-common`); honors `--no-tui` (wizard disabled / falls back to flags when there's no interactive terminal).
+- **Builds on:** the existing inline TUI (the `tui` module in `beam-rs`); honors `--no-tui` (wizard disabled / falls back to flags when there's no interactive terminal).
 
 ### Browser-Accessible Tor Downloads
 **Domain:** Tor Mode

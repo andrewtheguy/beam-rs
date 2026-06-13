@@ -3,9 +3,9 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
-use beam_common::core::transfer::is_interrupted;
-use beam_common::core::beam;
-use beam_common::ui;
+use beam_rs::core::transfer::is_interrupted;
+use beam_rs::core::beam;
+use beam_rs::ui;
 
 mod auth;
 mod signaling;
@@ -147,7 +147,7 @@ async fn async_main() -> Result<()> {
     // Start the inline TUI (if applicable) and install its sink. Honors
     // --no-tui and the terminal auto-detect; returns None in plain mode (or if
     // the inline viewport can't be initialized), leaving the plain sink in place.
-    let tui_handle = beam_common::tui::decide_and_install(cli.no_tui);
+    let tui_handle = beam_rs::tui::decide_and_install(cli.no_tui);
 
     // Only discard tracing once the TUI is actually active — otherwise a failed
     // TUI init would silently drop logs with no viewport to show status. Set up

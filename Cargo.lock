@@ -539,32 +539,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
-name = "beam-common"
-version = "0.0.19"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "base64",
- "crc32fast",
- "crossterm",
- "futures",
- "hex",
- "log",
- "rand 0.8.6",
- "ratatui",
- "rustyline",
- "serde",
- "serde_json",
- "signal-hook",
- "tar",
- "tempfile",
- "tokio",
- "tokio-util",
- "walkdir",
- "xxhash-rust",
-]
-
-[[package]]
 name = "beam-rs"
 version = "0.0.19"
 dependencies = [
@@ -573,8 +547,9 @@ dependencies = [
  "argon2",
  "arti-client",
  "base64",
- "beam-common",
  "clap",
+ "crc32fast",
+ "crossterm",
  "futures",
  "hex",
  "hickory-resolver",
@@ -583,17 +558,24 @@ dependencies = [
  "log",
  "nostr-sdk",
  "rand 0.8.6",
+ "ratatui",
  "reqwest",
  "rustls",
+ "rustyline",
  "safelog",
+ "serde",
  "serde_json",
+ "signal-hook",
  "spake2",
+ "tar",
  "tempfile",
  "tokio",
  "tokio-util",
  "tor-cell",
  "tor-hsservice",
  "tracing-subscriber",
+ "walkdir",
+ "xxhash-rust",
 ]
 
 [[package]]

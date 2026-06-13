@@ -10,13 +10,13 @@ use tokio::time::timeout;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::{config::OnionServiceConfigBuilder, handle_rend_requests};
 
-use beam_common::core::crypto::generate_key;
-use beam_common::core::transfer::{
+use beam_rs::core::crypto::generate_key;
+use beam_rs::core::transfer::{
     FileHeader, TransferResult, TransferType, run_sender_transfer_with_timeout, send_file_with,
     send_folder_with,
 };
-use beam_common::core::beam::generate_tor_code;
-use beam_common::ui::{self, Phase};
+use beam_rs::core::beam::generate_tor_code;
+use beam_rs::ui::{self, Phase};
 
 use crate::cli::instructions::print_receiver_command;
 

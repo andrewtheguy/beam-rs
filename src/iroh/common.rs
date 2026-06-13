@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use beam_common::core::beam::{
+use beam_rs::core::beam::{
     CURRENT_VERSION, MinimalAddr, PROTOCOL_IROH, BeamToken,
 };
 
@@ -175,7 +175,7 @@ pub fn watch_connection_paths(conn: &Connection) -> PathWatcherGuard {
         while let Some(paths) = stream.next().await {
             let formatted = format_paths(&paths);
             if last.as_deref() != Some(formatted.as_str()) {
-                beam_common::ui::sink().status(&format!("   Connection: {}", formatted));
+                beam_rs::ui::sink().status(&format!("   Connection: {}", formatted));
                 last = Some(formatted);
             }
         }
@@ -453,7 +453,7 @@ pub fn generate_code(
     let token = BeamToken {
         version: CURRENT_VERSION,
         protocol: PROTOCOL_IROH.to_string(),
-        created_at: beam_common::core::beam::current_timestamp(),
+        created_at: beam_rs::core::beam::current_timestamp(),
         key: URL_SAFE_NO_PAD.encode(key),
         addr: Some(minimal_addr),
         onion_address: None,
@@ -467,7 +467,7 @@ pub fn generate_code(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use beam_common::core::beam::parse_code;
+    use beam_rs::core::beam::parse_code;
     use iroh::SecretKey;
 
     #[test]

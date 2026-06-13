@@ -8,9 +8,9 @@ use super::common::{IrohDuplex, create_sender_endpoint, generate_code, watch_con
 use crate::cli::instructions::print_receiver_command;
 use crate::auth::PinInfo;
 use crate::auth::spake2::handshake_as_responder;
-use beam_common::core::crypto::generate_key;
-use beam_common::ui::{self, Phase};
-use beam_common::core::transfer::{
+use beam_rs::core::crypto::generate_key;
+use beam_rs::ui::{self, Phase};
+use beam_rs::core::transfer::{
     FileHeader, Interrupted, TransferResult, TransferType, run_sender_transfer, send_file_with,
     send_folder_with,
 };
