@@ -71,7 +71,8 @@ pub fn generate_pin() -> String {
             PIN_CHARSET[idx] as char
         })
         .collect();
-    let checksum = compute_checksum(&prefix).unwrap();
+    let checksum =
+        compute_checksum(&prefix).expect("Generated prefix should always compute valid checksum");
     format!("{}{}", prefix, checksum)
 }
 

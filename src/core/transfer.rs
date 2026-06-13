@@ -1031,16 +1031,13 @@ pub async fn receive_file_data<R: AsyncReadExt + Unpin>(
         receiver.bytes_received += chunk.len() as u64;
         chunk_num += 1;
 
-        // Update metadata periodically for crash recovery
+        // Update metadata periodically for crash recovery.
+        // `update_resume_metadata` writes the header at offset 0 without moving the
+        // write cursor (pwrite on Unix; save/restore elsewhere), so no seek is needed
+        // around it — the cursor stays at the data tail for the next append.
         if metadata_update_interval > 0 && chunk_num.is_multiple_of(metadata_update_interval) {
             receiver.metadata.bytes_received = receiver.bytes_received;
-            // Seek to beginning to update metadata
-            receiver.temp_file.seek(SeekFrom::Start(0))?;
             update_resume_metadata(&mut receiver.temp_file, &receiver.metadata)?;
-            // Seek back to end of data
-            receiver.temp_file.seek(SeekFrom::Start(
-                receiver.data_offset + receiver.bytes_received,
-            ))?;
         }
 
         // Progress update
@@ -1060,9 +1057,9 @@ pub async fn receive_file_data<R: AsyncReadExt + Unpin>(
         ui::sink().progress_end(); // New line after progress
     }
 
-    // Final metadata update
+    // Final metadata update. `update_resume_metadata` writes the header at offset 0
+    // without moving the cursor, so no seek is needed here either.
     receiver.metadata.bytes_received = receiver.bytes_received;
-    receiver.temp_file.seek(SeekFrom::Start(0))?;
     update_resume_metadata(&mut receiver.temp_file, &receiver.metadata)?;
     receiver.temp_file.flush()?;
 
