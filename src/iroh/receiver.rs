@@ -1,14 +1,14 @@
 use anyhow::{Context, Result};
 use iroh::endpoint::{
-    AuthenticationError, ConnectError, ConnectWithOptsError, ConnectingError, ConnectionError,
+    AuthenticationError, ConnectError, ConnectWithOptsError, ConnectingError,
 };
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::timeout;
 
 use super::common::{
-    ALPN, OwnedIrohDuplex, create_receiver_endpoint, minimal_addr_to_endpoint,
-    watch_connection_paths,
+    ALPN, OwnedIrohDuplex, create_receiver_endpoint, is_connection_error_network_related,
+    minimal_addr_to_endpoint, watch_connection_paths,
 };
 use crate::auth::PinInfo;
 use crate::auth::spake2::handshake_as_initiator;
@@ -84,10 +84,22 @@ pub async fn receive(
     const ACCEPT_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
     // Accept bi-directional stream
-    let (send_stream, mut recv_stream) = timeout(ACCEPT_STREAM_TIMEOUT, conn.accept_bi())
+    let accept_result = timeout(ACCEPT_STREAM_TIMEOUT, conn.accept_bi())
         .await
-        .context("Timed out waiting for sender to open stream")?
-        .context("Failed to accept stream")?;
+        .context("Timed out waiting for sender to open stream")
+        .and_then(|r| r.context("Failed to accept stream"));
+    let (send_stream, mut recv_stream) = match accept_result {
+        Ok(streams) => streams,
+        Err(e) => {
+            // Same established-connection cleanup as the SPAKE2/handshake paths:
+            // the connection is up, so signal the peer with a close code and reason
+            // instead of relying on Drop.
+            drop(path_watcher);
+            conn.close(2u32.into(), b"failed to accept stream");
+            endpoint.close().await;
+            return Err(e);
+        }
+    };
 
     // Perform SPAKE2 handshake if PIN mode is active (receiver = initiator)
     let (key, send_stream) = if let Some(ref pin_info) = pin_info {
@@ -97,6 +109,12 @@ pub async fn receive(
         let mut ready = [0u8; 1];
         recv_stream.read_exact(&mut ready).await.context("Failed to read ready byte")?;
         if ready[0] != 0x01 {
+            // Same cleanup as the handshake-failure path below: the connection is
+            // already established, so gracefully signal the peer and close the
+            // endpoint rather than relying on Drop.
+            drop(path_watcher);
+            conn.close(2u32.into(), b"invalid ready byte");
+            endpoint.close().await;
             anyhow::bail!("Invalid ready byte: expected 0x01, got 0x{:02x}", ready[0]);
         }
         ui::sink().set_phase(Phase::Authenticating);
@@ -251,26 +269,5 @@ fn is_authentication_error_relay_related(e: &AuthenticationError) -> bool {
         AuthenticationError::RemoteId { .. } => false,
         // Future variants: conservatively treat as not relay-related
         _ => false,
-    }
-}
-
-/// Check if a quinn ConnectionError indicates a network-related issue
-fn is_connection_error_network_related(e: &ConnectionError) -> bool {
-    match e {
-        ConnectionError::TimedOut => true,
-        ConnectionError::Reset => true,
-        ConnectionError::TransportError(te) => {
-            // Transport errors can indicate network issues
-            let msg = te.to_string().to_lowercase();
-            msg.contains("no route")
-                || msg.contains("unreachable")
-                || msg.contains("network")
-                || msg.contains("connection refused")
-        }
-        ConnectionError::VersionMismatch => false,
-        ConnectionError::ConnectionClosed(_) => false,
-        ConnectionError::ApplicationClosed(_) => false,
-        ConnectionError::LocallyClosed => false,
-        ConnectionError::CidsExhausted => false,
     }
 }

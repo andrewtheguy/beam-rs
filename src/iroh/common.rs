@@ -6,7 +6,7 @@ use futures::StreamExt;
 use iroh::{
     dns::{DnsProtocol, DnsResolver},
     Endpoint, EndpointAddr, RelayMap, RelayUrl, TransportAddr, Watcher,
-    endpoint::{Connection, PathList, RecvStream, RelayMode, SendStream, presets},
+    endpoint::{Connection, ConnectionError, PathList, RecvStream, RelayMode, SendStream, presets},
 };
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 use tokio::task::JoinHandle;
@@ -20,6 +20,29 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use beam_rs::core::beam::{
     CURRENT_VERSION, MinimalAddr, PROTOCOL_IROH, BeamToken,
 };
+
+/// Check if a quinn `ConnectionError` indicates a network-related issue.
+///
+/// Shared by the sender and receiver connect-error classifiers.
+pub fn is_connection_error_network_related(e: &ConnectionError) -> bool {
+    match e {
+        ConnectionError::TimedOut => true,
+        ConnectionError::Reset => true,
+        ConnectionError::TransportError(te) => {
+            // Transport errors can indicate network issues
+            let msg = te.to_string().to_lowercase();
+            msg.contains("no route")
+                || msg.contains("unreachable")
+                || msg.contains("network")
+                || msg.contains("connection refused")
+        }
+        ConnectionError::VersionMismatch => false,
+        ConnectionError::ConnectionClosed(_) => false,
+        ConnectionError::ApplicationClosed(_) => false,
+        ConnectionError::LocallyClosed => false,
+        ConnectionError::CidsExhausted => false,
+    }
+}
 
 /// A duplex wrapper that combines separate send/recv streams into a single bidirectional stream.
 ///

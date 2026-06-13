@@ -1,10 +1,13 @@
 use anyhow::{Context, Result};
-use iroh::endpoint::{ConnectingError, ConnectionError};
+use iroh::endpoint::ConnectingError;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::sync::oneshot;
 
-use super::common::{IrohDuplex, create_sender_endpoint, generate_code, watch_connection_paths};
+use super::common::{
+    IrohDuplex, create_sender_endpoint, generate_code, is_connection_error_network_related,
+    watch_connection_paths,
+};
 use crate::cli::instructions::print_receiver_command;
 use crate::auth::PinInfo;
 use crate::auth::spake2::handshake_as_responder;
@@ -61,27 +64,6 @@ fn is_relay_or_network_error(e: &ConnectingError) -> bool {
         || err_str.contains("no route")
         || err_str.contains("unreachable")
         || err_str.contains("network")
-}
-
-/// Check if a quinn ConnectionError indicates a network-related issue.
-fn is_connection_error_network_related(e: &ConnectionError) -> bool {
-    match e {
-        ConnectionError::TimedOut => true,
-        ConnectionError::Reset => true,
-        ConnectionError::TransportError(te) => {
-            // Transport errors can indicate network issues
-            let msg = te.to_string().to_lowercase();
-            msg.contains("no route")
-                || msg.contains("unreachable")
-                || msg.contains("network")
-                || msg.contains("connection refused")
-        }
-        ConnectionError::VersionMismatch => false,
-        ConnectionError::ConnectionClosed(_) => false,
-        ConnectionError::ApplicationClosed(_) => false,
-        ConnectionError::LocallyClosed => false,
-        ConnectionError::CidsExhausted => false,
-    }
 }
 
 /// Internal helper for common transfer logic.
