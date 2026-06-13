@@ -80,21 +80,21 @@ async fn transfer_data_internal(
     transfer_type: TransferType,
     relay_urls: Vec<String>,
     use_pin: bool,
-    no_server: bool,
+    serverless: bool,
     shutdown_rx: Option<oneshot::Receiver<()>>,
 ) -> Result<()> {
     // Always generate encryption key for application-layer encryption
     let key = generate_key();
 
     // Create iroh endpoint
-    let endpoint = create_sender_endpoint(relay_urls.clone(), no_server).await?;
+    let endpoint = create_sender_endpoint(relay_urls.clone(), serverless).await?;
 
     // Get our address
     let addr = endpoint.addr();
 
     // Generate beam code. The configured custom relays are embedded so the
     // receiver adopts them without needing its own --relay-url flag.
-    let code = generate_code(&addr, &key, &relay_urls, no_server)?;
+    let code = generate_code(&addr, &key, &relay_urls, serverless)?;
 
     // `receive` takes no code/PIN argument — it prompts for the input and
     // auto-detects whether it is a full beam code or a PIN.
@@ -270,7 +270,7 @@ pub async fn send_file(
     file_path: &Path,
     relay_urls: Vec<String>,
     use_pin: bool,
-    no_server: bool,
+    serverless: bool,
 ) -> Result<()> {
     send_file_with(
         file_path,
@@ -283,7 +283,7 @@ pub async fn send_file(
                 transfer_type,
                 relay_urls,
                 use_pin,
-                no_server,
+                serverless,
                 None, // No shutdown receiver for resumable file transfers
             )
         },
@@ -301,7 +301,7 @@ pub async fn send_folder(
     folder_path: &Path,
     relay_urls: Vec<String>,
     use_pin: bool,
-    no_server: bool,
+    serverless: bool,
 ) -> Result<()> {
     send_folder_with(
         folder_path,
@@ -314,7 +314,7 @@ pub async fn send_folder(
                 transfer_type,
                 relay_urls,
                 use_pin,
-                no_server,
+                serverless,
                 None, // Shutdown handling is done by send_folder_with
             )
         },

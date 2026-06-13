@@ -75,7 +75,7 @@ pub struct MinimalAddr {
     /// Direct socket addresses (host:port) for the endpoint.
     ///
     /// Normally empty — direct addresses are discovered at connect time via the
-    /// relay or mDNS. In no-server mode there is no relay, so the sender embeds
+    /// relay or mDNS. In serverless mode there is no relay, so the sender embeds
     /// every direct address iroh discovered (LAN and any public/port-mapped
     /// addresses) here, letting the receiver attempt them all; mDNS resolution
     /// (unreliable on some platforms) stays as a fallback.

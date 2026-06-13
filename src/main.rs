@@ -52,16 +52,16 @@ enum Commands {
         #[arg(long)]
         relay_url: Vec<String>,
 
-        /// No third-party server: disable relays (and Nostr), embed all
-        /// discovered IPs (LAN and public) in the beam code, and connect
+        /// Serverless: no third-party server: disable relays (and Nostr), embed
+        /// all discovered IPs (LAN and public) in the beam code, and connect
         /// directly via those with mDNS as a fallback. Primarily for same-LAN
         /// transfers (not strictly local-only). Incompatible with --pin and
         /// --relay-url.
         #[arg(long)]
-        no_server: bool,
+        serverless: bool,
 
         /// Send via a Tor hidden service (anonymous) instead of iroh.
-        /// Incompatible with --pin, --relay-url, and --no-server.
+        /// Incompatible with --pin, --relay-url, and --serverless.
         #[arg(long)]
         tor: bool,
     },
@@ -255,13 +255,13 @@ async fn run(command: Commands) -> Result<()> {
             folder,
             pin,
             relay_url,
-            no_server,
+            serverless,
             tor,
         } => {
             validate_path(&path, folder)?;
-            if tor && (pin || no_server || !relay_url.is_empty()) {
+            if tor && (pin || serverless || !relay_url.is_empty()) {
                 anyhow::bail!(
-                    "--tor cannot be combined with --pin, --no-server, or --relay-url: \
+                    "--tor cannot be combined with --pin, --serverless, or --relay-url: \
                      those options configure the iroh transport, which --tor replaces."
                 );
             }
@@ -273,22 +273,22 @@ async fn run(command: Commands) -> Result<()> {
                 }
                 return Ok(());
             }
-            if no_server && pin {
+            if serverless && pin {
                 anyhow::bail!(
-                    "--no-server cannot be combined with --pin: PIN exchange uses Nostr, \
+                    "--serverless cannot be combined with --pin: PIN exchange uses Nostr, \
                      which requires a third-party server."
                 );
             }
-            if no_server && !relay_url.is_empty() {
+            if serverless && !relay_url.is_empty() {
                 anyhow::bail!(
-                    "--no-server cannot be combined with --relay-url: relays are disabled \
-                     in no-server mode."
+                    "--serverless cannot be combined with --relay-url: relays are disabled \
+                     in serverless mode."
                 );
             }
             if folder {
-                iroh_sender::send_folder(&path, relay_url, pin, no_server).await?;
+                iroh_sender::send_folder(&path, relay_url, pin, serverless).await?;
             } else {
-                iroh_sender::send_file(&path, relay_url, pin, no_server).await?;
+                iroh_sender::send_file(&path, relay_url, pin, serverless).await?;
             }
         }
 
@@ -342,16 +342,16 @@ async fn receive_with_code(
 
     match token.protocol.as_str() {
         beam::PROTOCOL_IROH => {
-            // A no-server code carries an endpoint address with no relay URL
+            // A serverless code carries an endpoint address with no relay URL
             // (but embedded direct IPs). Detect that and disable relays on the
             // receiver to match the sender. Any custom relays the sender used
             // travel inside the code, so the receiver needs no relay flag.
-            let no_server = token
+            let serverless = token
                 .addr
                 .as_ref()
                 .map(|addr| addr.relay.is_none())
                 .unwrap_or(false);
-            iroh_receiver::receive(code, output, no_resume, pin_info, no_server).await?;
+            iroh_receiver::receive(code, output, no_resume, pin_info, serverless).await?;
         }
         beam::PROTOCOL_TOR => {
             // A Tor code carries an onion address; bootstrap the Tor client and

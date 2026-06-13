@@ -26,9 +26,9 @@ Ideas and feature requests for future consideration.
 - **Options the wizard would cover:**
   - `--folder` — single file vs. folder (could also be auto-detected from the path).
   - `--pin` — short PIN exchange via Nostr vs. sharing the full beam code.
-  - `--no-server` — no third-party server (relays/Nostr disabled), primarily for same-LAN transfers.
+  - `--serverless` — no third-party server (relays/Nostr disabled), primarily for same-LAN transfers.
   - `--relay-url` — custom relay servers.
-- **Should encode the constraints:** e.g. `--no-server` is mutually exclusive with `--pin` and `--relay-url`, so the wizard should prevent invalid combinations rather than erroring after the fact.
+- **Should encode the constraints:** e.g. `--serverless` is mutually exclusive with `--pin` and `--relay-url`, so the wizard should prevent invalid combinations rather than erroring after the fact.
 - **Builds on:** the existing inline TUI (the `tui` module in `beam-rs`); honors `--no-tui` and non-terminal output by disabling the wizard and falling back to explicit flags.
 
 ### Browser-Accessible Tor Downloads
@@ -38,7 +38,7 @@ Ideas and feature requests for future consideration.
 
 ### Zero-Config mDNS Discovery (browse + PIN)
 **Domain:** Local Connection
-- **Status:** Removed. The standalone `beam-rs-local` binary that did this was removed when local LAN transfers were folded into `beam-rs send --no-server` (iroh with relays disabled, sharing a beam code).
+- **Status:** Removed. The standalone `beam-rs-local` binary that did this was removed when local LAN transfers were folded into `beam-rs send --serverless` (iroh with relays disabled, sharing a beam code).
 - **What it was:** The receiver browsed mDNS for advertised senders, picked one from a list, and entered a short PIN — no beam code copied between the two machines.
-- **Why removed:** Lack of a clear use case. `--no-server` covers transfers with no third-party server, and `--pin` covers short-code exchange (via Nostr).
-- **Add back if:** There is a need for transfers with **no copy-paste between sender and receiver** (e.g. a remote console or second device where pasting a long beam code is impractical) while staying fully offline — the one gap `--no-server` and `--pin` don't jointly cover.
+- **Why removed:** Lack of a clear use case. `--serverless` covers transfers with no third-party server, and `--pin` covers short-code exchange (via Nostr).
+- **Add back if:** There is a need for transfers with **no copy-paste between sender and receiver** (e.g. a remote console or second device where pasting a long beam code is impractical) while staying fully offline — the one gap `--serverless` and `--pin` don't jointly cover.

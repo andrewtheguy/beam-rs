@@ -247,12 +247,12 @@ fn print_relay_info(relay_urls: &[String]) {
 /// The endpoint is configured with ALPN for beam transfers.
 /// Multiple relay URLs provide automatic failover based on latency.
 ///
-/// When `no_server` is set, relays are disabled entirely (no third-party server
+/// When `serverless` is set, relays are disabled entirely (no third-party server
 /// is contacted): the endpoint's discovered direct addresses are embedded in the
 /// beam code and mDNS is kept as a discovery fallback.
-pub async fn create_sender_endpoint(relay_urls: Vec<String>, no_server: bool) -> Result<Endpoint> {
-    let relay_mode = if no_server {
-        eprintln!("No-server mode (direct connection, no relay)");
+pub async fn create_sender_endpoint(relay_urls: Vec<String>, serverless: bool) -> Result<Endpoint> {
+    let relay_mode = if serverless {
+        eprintln!("Serverless mode (direct connection, no relay)");
         RelayMode::Disabled
     } else {
         print_relay_info(&relay_urls);
@@ -276,7 +276,7 @@ pub async fn create_sender_endpoint(relay_urls: Vec<String>, no_server: bool) ->
         .await
         .context("Failed to create endpoint")?;
 
-    if no_server {
+    if serverless {
         // `online()` waits for a home relay to connect, which never happens
         // with relays disabled. Instead wait until we have at least one direct
         // address so the printed beam code embeds a reachable address (and mDNS
@@ -292,7 +292,7 @@ pub async fn create_sender_endpoint(relay_urls: Vec<String>, no_server: bool) ->
 
 /// Wait until the endpoint has discovered at least one direct (IP) address.
 ///
-/// Used in no-server mode where there is no relay to fall back on: the printed
+/// Used in serverless mode where there is no relay to fall back on: the printed
 /// beam code embeds the discovered addresses, so we wait for at least one. Gives
 /// up after a short timeout, in which case the receiver may simply need a moment
 /// longer for mDNS to propagate.
@@ -325,15 +325,15 @@ async fn wait_for_direct_address(endpoint: &Endpoint) {
 /// Does not set ALPN as the receiver specifies it when connecting.
 /// Multiple relay URLs provide automatic failover based on latency.
 ///
-/// When `no_server` is set, relays are disabled entirely (no third-party server
+/// When `serverless` is set, relays are disabled entirely (no third-party server
 /// is contacted): the sender is reached via the direct addresses embedded in the
 /// beam code, with mDNS as a fallback.
 pub async fn create_receiver_endpoint(
     relay_urls: Vec<String>,
-    no_server: bool,
+    serverless: bool,
 ) -> Result<Endpoint> {
-    let relay_mode = if no_server {
-        eprintln!("No-server mode (direct connection, no relay)");
+    let relay_mode = if serverless {
+        eprintln!("Serverless mode (direct connection, no relay)");
         RelayMode::Disabled
     } else {
         print_relay_info(&relay_urls);
@@ -367,7 +367,7 @@ pub async fn create_receiver_endpoint(
 /// ("Failed to read the system's DNS config, using fallback DNS servers")
 /// before falling back internally. On macOS the read can fail to parse a
 /// scoped nameserver entry, producing that warning on every bind — and it is
-/// not specific to no-server mode.
+/// not specific to serverless mode.
 ///
 /// To keep the system config when it is valid while avoiding the spurious
 /// warning, we probe the same `read_system_conf()` call iroh uses:
@@ -377,7 +377,7 @@ pub async fn create_receiver_endpoint(
 ///     same Google servers iroh would otherwise fall back to — so iroh never
 ///     reads the system config and never warns.
 ///
-/// In no-server mode DNS is never used (mDNS handles address lookup); in
+/// In serverless mode DNS is never used (mDNS handles address lookup); in
 /// relay mode this resolves relay hostnames and n0 discovery records. Note
 /// that `DnsResolver::builder().build()` alone yields a resolver with *no*
 /// nameservers (an empty `ResolverConfig::default()`), which is why the
@@ -412,7 +412,7 @@ fn beam_dns_resolver() -> DnsResolver {
 /// the sender used the defaults.
 ///
 /// IP addresses are normally stripped (they're discovered at connect time via
-/// relay or mDNS), but when `include_ip_addrs` is set — no-server mode — every
+/// relay or mDNS), but when `include_ip_addrs` is set — serverless mode — every
 /// direct address iroh discovered (LAN and any public/port-mapped addresses) is
 /// embedded so the receiver can attempt them all without relying on mDNS.
 pub fn minimal_addr_from_endpoint(
@@ -459,7 +459,7 @@ pub fn minimal_addr_to_endpoint(addr: &MinimalAddr) -> Result<EndpointAddr> {
 /// Generate a beam code from endpoint address
 /// Format: base64url(json(BeamToken))
 ///
-/// In `no_server` mode the endpoint's discovered direct addresses are embedded
+/// In `serverless` mode the endpoint's discovered direct addresses are embedded
 /// in the code so the receiver can connect without depending on mDNS resolution.
 ///
 /// `relay_urls` is the sender's configured custom relay set (from `--relay-url`,
@@ -469,9 +469,9 @@ pub fn generate_code(
     addr: &EndpointAddr,
     key: &[u8; 32],
     relay_urls: &[String],
-    no_server: bool,
+    serverless: bool,
 ) -> Result<String> {
-    let minimal_addr = minimal_addr_from_endpoint(addr, relay_urls, no_server);
+    let minimal_addr = minimal_addr_from_endpoint(addr, relay_urls, serverless);
 
     let token = BeamToken {
         version: CURRENT_VERSION,
@@ -494,7 +494,7 @@ mod tests {
     use iroh::SecretKey;
 
     #[test]
-    fn no_server_code_embeds_direct_ip_addresses() {
+    fn serverless_code_embeds_direct_ip_addresses() {
         let key = [42u8; 32];
         let addr = EndpointAddr::new(SecretKey::generate().public())
             .with_ip_addr("192.168.1.10:4444".parse().unwrap());
@@ -504,7 +504,7 @@ mod tests {
         let minimal_addr = token.addr.unwrap();
 
         assert_eq!(minimal_addr.ip_addrs, vec!["192.168.1.10:4444".to_string()]);
-        // No-server codes carry no relay URL — that's how the receiver detects
+        // Serverless codes carry no relay URL — that's how the receiver detects
         // the mode.
         assert!(minimal_addr.relay.is_none());
     }
