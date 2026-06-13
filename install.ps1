@@ -412,7 +412,7 @@ Download and install beam-rs binary
 
 Options:
   -DownloadOnly  Download binary to current directory without installing
-  -PreRelease    Use latest prerelease instead of latest stable release
+  -PreRelease    Use latest prerelease tag instead of latest stable release
   -Admin         Allow installation with administrator privileges (not recommended)
   -h, --help     Show this help message
 
@@ -425,16 +425,16 @@ Environment variables:
 
 Examples:
     .\install.ps1                              # Install latest beam-rs (args-only parser)
-    .\install.ps1 20251210172710               # Install specific release
-    .\install.ps1 -PreRelease                  # Install latest prerelease
+    .\install.ps1 <release-tag>                # Install specific stable release
     .\install.ps1 -DownloadOnly                # Download latest to current directory
-    .\install.ps1 -DownloadOnly 20251210172710 # Download specific release
+    .\install.ps1 -DownloadOnly <release-tag>  # Download specific stable release
     .\install.ps1 -Admin                       # Allow admin installation (not recommended)
     `$env:RELEASE_TAG='latest'; .\install.ps1  # Use environment variable
-    `$env:BEAM_INSTALL_ARGS='-PreRelease'; irm https://andrewtheguy.github.io/beam-rs/install.ps1 | iex
 
 Supported platforms: Windows (amd64)
 
+Note: Current prerelease jobs do not publish Windows binaries, so -PreRelease is
+      only useful if a prerelease has a Windows asset.
 Note: Installation as administrator is not recommended. Use -Admin flag to override.
 "@
 }

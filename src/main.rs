@@ -355,9 +355,9 @@ async fn receive_with_code(
         }
         beam::PROTOCOL_TOR => {
             // A Tor code carries an onion address; bootstrap the Tor client and
-            // connect anonymously. `no_resume`/`pin_info` are iroh-only and do
-            // not apply to the Tor transport.
-            onion_receiver::receive_file_tor(code, output).await?;
+            // connect anonymously. `pin_info` is iroh-only and does not apply
+            // to the Tor transport.
+            onion_receiver::receive_file_tor(code, output, no_resume).await?;
         }
         proto => {
             anyhow::bail!("Unknown protocol in beam code: {}", proto);

@@ -37,7 +37,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     result == 0
 }
 
-/// Perform SPAKE2 handshake as initiator (receiver role in mDNS).
+/// Perform SPAKE2 handshake as initiator (receiver role in PIN mode).
 ///
 /// The receiver connects first and sends their SPAKE2 message along with
 /// the transfer ID, then receives the sender's SPAKE2 message.
@@ -108,7 +108,7 @@ where
     Ok(key)
 }
 
-/// Perform SPAKE2 handshake as responder (sender role in mDNS).
+/// Perform SPAKE2 handshake as responder (sender role in PIN mode).
 ///
 /// The sender waits for the receiver to connect and send their SPAKE2 message,
 /// then responds with their own SPAKE2 message.

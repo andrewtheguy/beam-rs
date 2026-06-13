@@ -8,19 +8,21 @@ A secure, cross-platform, single-binary peer-to-peer file transfer tool with dir
 ## Features
 
 - **End-to-end encryption** - All transfers use AES-256-GCM encryption
-- **Resumable file transfers** - Interrupted file downloads can resume from where they left off
+- **Resumable file transfers** - Interrupted file downloads can resume from receiver partial state (folder transfers are streamed tar archives and are not resumable)
 - **File and folder transfers** - Send individual files or entire directories (automatically archived)
 - **Multiple transport modes** - iroh (recommended) and Tor
-- **Serverless transfers** - direct transfers with no third-party server; all discovered IPs (LAN and public) are embedded in the beam code, with mDNS as a fallback (`beam-rs send --no-server`)
+- **Serverless transfers** - direct transfers with no third-party server; currently discovered direct addresses (LAN and any public/port-mapped addresses) are embedded in the beam code, with mDNS as a fallback (`beam-rs send --no-server`)
 - **NAT traversal** - Automatic relay fallback for iroh
 - **Anonymous transfers** - Tor hidden services via `beam-rs send --tor` for anonymity
-- **Cross-platform** - Standalone binary for macOS, Linux, and Windows
+- **Cross-platform** - Standalone release binaries for Linux x86_64/aarch64, macOS Apple Silicon, and Windows x86_64 (stable releases)
 
 ## Installation
 
 The release installers fetch a native, standalone executable. You only need the binary in your PATH; no runtime dependencies or package managers are required.
 
 ### Quick Install (Linux & macOS)
+
+The shell installer supports Linux x86_64/aarch64 and macOS Apple Silicon.
 
 ```bash
 curl -sSL https://andrewtheguy.github.io/beam-rs/install.sh | bash
@@ -33,23 +35,23 @@ By default the installer pulls the latest **stable** release. Use `--prerelease`
 curl -sSL https://andrewtheguy.github.io/beam-rs/install.sh | bash -s -- --prerelease
 
 # Pin to a specific tag
-curl -sSL https://andrewtheguy.github.io/beam-rs/install.sh | bash -s 20251210172710
+curl -sSL https://andrewtheguy.github.io/beam-rs/install.sh | bash -s <release-tag>
 ```
 
 ### Quick Install (Windows)
+
+The Windows installer supports x86_64 stable releases. Prerelease release jobs
+do not publish a Windows binary.
 
 ```powershell
 irm https://andrewtheguy.github.io/beam-rs/install.ps1 | iex
 ```
 
-By default the PowerShell installer pulls the latest **stable** release. Use `-PreRelease` for the newest prerelease, or pass an explicit tag to pin to a specific build. Examples (args-only parser):
+By default the PowerShell installer pulls the latest **stable** release. Pass an explicit tag to pin to a specific stable build. Examples (args-only parser):
 
 ```powershell
-# Latest prerelease
-$env:BEAM_INSTALL_ARGS='-PreRelease'; irm https://andrewtheguy.github.io/beam-rs/install.ps1 | iex
-
 # Pin to a specific tag
-$env:BEAM_INSTALL_ARGS='20251210172710'; irm https://andrewtheguy.github.io/beam-rs/install.ps1 | iex
+$env:BEAM_INSTALL_ARGS='<release-tag>'; irm https://andrewtheguy.github.io/beam-rs/install.ps1 | iex
 ```
 
 ### From Source
@@ -101,6 +103,12 @@ from the beam code.
 beam-rs receive
 # Prompts for the beam code or PIN (a 12-character PIN is auto-detected and
 # resolved via Nostr).
+
+# Optional output directory
+beam-rs receive --output /path/to/downloads
+
+# Disable file resume state for this receive
+beam-rs receive --no-resume
 ```
 
 ---
@@ -109,28 +117,34 @@ beam-rs receive
 
 **No third-party server (primarily for same-network/LAN transfers)**
 - `beam-rs send --no-server`: iroh transport with relays disabled; the sender
-  embeds all of its discovered IPs (LAN and any public/port-mapped addresses) in
-  the beam code, with mDNS kept as a discovery fallback
+  embeds the direct addresses discovered before the code is printed (LAN and any
+  public/port-mapped addresses) in the beam code, with mDNS kept as a discovery
+  fallback
 - No relay or Nostr server is contacted; share the printed beam code with the receiver
 - The expected use case is a shared LAN. It is not *strictly* local-only —
   enforcing that would be an unnecessary burden — so a WAN connection can
   succeed if a public/port-mapped address happens to be reachable, but NAT and
   firewalls usually prevent that.
 
-> **Note**: Tor mode requires internet access. iroh mode can be air‑gapped when you self‑host the relay and point the sender at it via `--relay-url` (the receiver picks it up from the code); the default public relay requires internet access.
+> **Note**: Tor mode and default iroh relay mode require internet access. Use
+> `--no-server` for offline/LAN transfers. A custom `--relay-url` avoids public
+> relays when your relay is reachable by both peers; the receiver gets that relay
+> list from the beam code.
 
 #### No-server (`--no-server`)
 
 Use this mode to transfer without any third-party server (no relay, no Nostr).
 It uses the same iroh transport and beam code as the default mode, but disables
-relays entirely: the beam code carries the sender endpoint ID plus every direct
-address iroh discovered — LAN interfaces and any public or port-mapped (UPnP/
-PCP/NAT-PMP) addresses — so the receiver attempts them all directly, with mDNS
-as a fallback. It is primarily intended for transfers on the same LAN; it is not
-strictly local-only (enforcing that would be an unnecessary burden), so a WAN
-connection may also succeed when a public/port-mapped address is reachable,
-though NAT and firewalls commonly prevent it. The receiver auto-detects
-no-server mode from the code (no flag needed).
+relays entirely: the beam code carries the sender endpoint ID plus the direct
+addresses discovered before the code is printed — LAN interfaces and any public
+or port-mapped (UPnP/PCP/NAT-PMP) addresses — so the receiver attempts them all
+directly, with mDNS as a fallback. The sender waits briefly for direct address
+discovery, then prints the code even if discovery is still catching up. This mode
+is primarily intended for transfers on the same LAN; it is not strictly
+local-only (enforcing that would be an unnecessary burden), so a WAN connection
+may also succeed when a public/port-mapped address is reachable, though NAT and
+firewalls commonly prevent it. The receiver auto-detects no-server mode from the
+code (no flag needed).
 
 ```bash
 # Send without a server
@@ -159,18 +173,21 @@ For protocol details and wire formats, see [ARCHITECTURE.md](docs/ARCHITECTURE.m
 ## Security
 
 All modes provide end-to-end encryption.
-- **All modes (iroh, iroh `--no-server`, Tor)**: The **Beam Code** carries the key/address information.
+- **Non-PIN modes (iroh, iroh `--no-server`, Tor)**: The **Beam Code** carries the key/address information.
+- **PIN mode (`send --pin`)**: Nostr relays store an encrypted beam code so the receiver can find the sender; after the iroh connection is established, SPAKE2 derives the content-encryption key from the PIN.
 
 | Mode | Type | Key Exchange | Transport Encryption | Content Encryption |
 |------|------|--------------|---------------------|-------------------|
 | iroh | Internet | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
+| iroh (`--pin`) | Internet | Nostr code lookup + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
 | iroh (`--no-server`) | Direct (LAN/public) | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
 | Tor (`send --tor`) | Internet | Beam Code | Tor circuits | AES-256-GCM |
 
 All modes use dual-layer encryption (transport + content). `--no-server` is the
 same iroh transport with relays disabled, so it keeps QUIC/TLS 1.3 on the wire.
 
-Relay servers (iroh, Tor) never see decrypted content or encryption keys.
+Relay servers (iroh, Tor) never see decrypted content or encryption keys. Nostr
+relays used by PIN mode see only the encrypted beam code and lookup tags.
 
 For detailed security model, see [ARCHITECTURE.md](docs/ARCHITECTURE.md#security-model).
 

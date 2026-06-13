@@ -73,7 +73,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build Release
-        run: cargo build --release --all-features --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Rename Binary
         run: mv target/${{ matrix.target }}/release/beam-rs target/release/beam-rs-${{ matrix.suffix }}
@@ -102,7 +102,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build Release
-        run: cargo build --release --all-features --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Rename Binary
         run: mv target/${{ matrix.target }}/release/beam-rs target/release/beam-rs-${{ matrix.suffix }}
@@ -130,7 +130,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build Release
-        run: cargo build --release --all-features --target ${{ env.TARGET }}
+        run: cargo build --release --target ${{ env.TARGET }}
 
       - name: Rename Binary
         run: move target\${{ env.TARGET }}\release\beam-rs.exe target\release\beam-rs-${{ env.SUFFIX }}.exe

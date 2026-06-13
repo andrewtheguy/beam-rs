@@ -10,7 +10,7 @@ beam-rs supports two main categories of transport:
     - **iroh Mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`
     - **Tor Mode**: Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`
 2. **Serverless Transfers** (using `beam-rs send --no-server`):
-    - **No-server Mode**: transfers using the iroh QUIC/TLS stack with relays disabled (no third-party server). The sender embeds all of its discovered IPs (LAN and any public/port-mapped addresses) in the beam code so the receiver connects directly, with mDNS as a fallback. Uses the same beam code format as iroh mode.
+    - **No-server Mode**: transfers using the iroh QUIC/TLS stack with relays disabled (no third-party server). The sender embeds the direct addresses discovered before the code is printed (LAN and any public/port-mapped addresses) in the beam code so the receiver connects directly, with mDNS as a fallback. Uses the same beam code format as iroh mode.
 
 ## Transfer Flows
 
@@ -31,7 +31,7 @@ sequenceDiagram
 
     Sender->>Sender: 3. Generate beam code
     Note over Sender: Code = base64url(JSON token: version, protocol, created_at, AES_key, minimal addr)
-    Note over Sender: Minimal addr = NodeID + relay URL
+    Note over Sender: Minimal addr = NodeID + selected relay URL + optional custom relay list
 
     Receiver->>Receiver: 4. Parse Code -> NodeAddr
     Receiver->>Relay: 5. Connect to Relay
@@ -66,11 +66,13 @@ sequenceDiagram
 No-server mode is for transfers without any third-party server (no relay, no
 Nostr), and is primarily intended for the same LAN. It is the **same** iroh
 transport and beam code as the default mode, with one difference: relays are
-disabled (`RelayMode::Disabled`). The sender waits for at least one direct
-address, then prints a beam code containing the endpoint ID plus every direct
-address iroh discovered (LAN interfaces and any public/port-mapped addresses)
-and no relay URL. The receiver auto-detects this mode from the missing relay URL
-and connects directly to the embedded addresses, falling back to mDNS. It is not
+disabled (`RelayMode::Disabled`). The sender waits up to 10 seconds for direct
+address discovery, then prints a beam code containing the endpoint ID plus the
+direct addresses discovered so far (LAN interfaces and any public/port-mapped
+addresses) and no relay URL. If no direct address is available yet, the sender
+warns and still prints the code; the receiver may still connect after mDNS
+propagates. The receiver auto-detects this mode from the missing relay URL and
+connects directly to the embedded addresses, falling back to mDNS. It is not
 strictly local-only — enforcing that would be an unnecessary burden — so a WAN
 connection may succeed when a public/port-mapped address is reachable, though
 NAT and firewalls commonly prevent it. (In no-server mode DNS is not used at
@@ -82,9 +84,9 @@ sequenceDiagram
     participant Receiver
 
     Sender->>Sender: 1. Bind iroh endpoint (RelayMode::Disabled)
-    Sender->>Sender: 2. Wait for a direct address
+    Sender->>Sender: 2. Wait briefly for direct address discovery
     Sender->>Sender: 3. Print beam code
-    Note over Sender: Beam code has endpoint id + discovered IPs (LAN/public), no relay URL
+    Note over Sender: Beam code has endpoint id + discovered direct addresses (LAN/public), no relay URL
 
     Note over Sender: User shares beam code out-of-band
 
@@ -139,7 +141,7 @@ sequenceDiagram
 
 ### Default iroh Mode (`beam-rs send`) - Recommended
 - **Transport**: QUIC / TLS 1.3
-- **Discovery**: Relay URL embedded in beam code + mDNS for local network.
+- **Discovery**: Selected relay URL embedded in the beam code, optional custom relay list from `--relay-url`, plus mDNS for local network.
 - **Relay**: iroh relays (DERP) - automatically used if direct P2P connection fails.
 - **Failover**: Uses multiple relays for redundancy; monitors latency to select the best path.
 - **Connection**: "Hole punching" attempts to establish a direct UDP connection; falls back to relay if NATs are strict.
@@ -149,11 +151,11 @@ sequenceDiagram
 
 ### No-server Mode (`beam-rs send --no-server`)
 - **Transport**: QUIC / TLS 1.3 (same as iroh mode)
-- **Discovery**: Direct addresses embedded in the beam code (every IP iroh discovered — LAN and any public/port-mapped addresses), with mDNS address lookup as a fallback; relays disabled (`RelayMode::Disabled`)
+- **Discovery**: Direct addresses embedded in the beam code (the IPs iroh discovered before the code was printed — LAN and any public/port-mapped addresses), with mDNS address lookup as a fallback; relays disabled (`RelayMode::Disabled`)
 - **Key Exchange**: Beam code (carries the AES key and an endpoint address with embedded IPs and no relay URL)
 - **PIN Support**: No; PIN exchange uses Nostr, a third-party server
 - **Encryption**: Always AES-256-GCM at the application layer, plus QUIC/TLS encryption
-- **Reachability**: Primarily intended for the same LAN. The sender waits for at least one direct address before printing the code so the embedded addresses are populated (it cannot wait for a relay, since relays are disabled). Not strictly local-only — a WAN connection may succeed when a public/port-mapped address is reachable, but NAT/firewalls commonly prevent it. Incompatible with `--pin` and `--relay-url`.
+- **Reachability**: Primarily intended for the same LAN. The sender waits briefly for direct address discovery before printing the code, but it does not wait forever because there is no relay to wait on. Not strictly local-only — a WAN connection may succeed when a public/port-mapped address is reachable, but NAT/firewalls commonly prevent it. Incompatible with `--pin` and `--relay-url`.
 
 ### Tor Mode (`beam-rs send --tor`)
 - **Transport**: Tor Onion Services
@@ -183,6 +185,7 @@ a SPAKE2 handshake over the established QUIC stream to derive the session key.
 PIN mode requires internet access for Nostr lookup.
 
 - **Format**: 12 characters (11 random + 1 checksum) from an unambiguous charset; the checksum catches typos before attempting a connection.
+- **Nostr lookup**: The sender publishes an encrypted beam code as event kind `24243` with a time-bucketed PIN hint. Events expire after 2 hours; receivers query the current and previous hourly bucket.
 - **Key Derivation**: The PIN is the SPAKE2 password, with fixed `beam-rs-sender`/`beam-rs-receiver` identities; the handshake derives the session key. The transfer_id is exchanged alongside the handshake and validated separately (constant-time compare), not folded into the key.
 - **Security**: SPAKE2 prevents offline dictionary attacks, and a mismatched transfer_id is rejected before the key is used.
 - **Confidentiality**: All data (headers, chunks, and control signals) is AES-256-GCM encrypted with the SPAKE2-derived key, on top of the transport encryption.
@@ -190,6 +193,7 @@ PIN mode requires internet access for Nostr lookup.
 ### Tor Mode Security
 - **Anonymity**: Sender/Receiver IPs hidden.
 - **Encryption**: End-to-end via Tor circuit encryption plus mandatory AES-256-GCM at application layer for all data (headers, chunks, and control signals).
+- **Timeouts**: The sender waits up to 10 minutes for a receiver to connect. The receiver retries retryable Tor connection failures up to 5 times and applies a 30-minute transfer timeout by default; set `BEAM_TRANSFER_TIMEOUT_SECS` to override it.
 
 ### TTL (Time-To-Live) Validation
 
@@ -202,6 +206,7 @@ All beam codes include a creation timestamp and are validated against a TTL to p
 
 **Validation Points:**
 1. **Beam Codes** (iroh, iroh `--no-server`, tor): Validated in `parse_code()` before connection. No-server codes use the same v4 token format and are validated the same way.
+2. **PIN Mode**: The Nostr event can live for up to 2 hours to survive hourly hint bucket boundaries, but the decrypted beam code is still parsed through the same 60-minute TTL validation.
 
 **Error Messages:**
 - Expired codes: "Token expired: code is X minutes old (max 60 minutes). Please request a new code from the sender."
@@ -234,6 +239,7 @@ These signals are not tied to chunk numbers and use fresh random nonces like all
 ### Resumable File On-Disk Flow
 
 Resumable state is only used for **file** transfers (not folders) when resume is enabled.
+The receiver `--no-resume` flag disables this state for file transfers.
 
 - Receiver writes incoming bytes to a resume temp file in the target directory:
   `<final_path>.beam-rs.partial`

@@ -149,7 +149,7 @@ async fn test_unencrypted_folder_transfer_type() {
 }
 
 // =============================================================================
-// Encrypted transfer tests (--extra-encrypt mode)
+// Application-layer encrypted transfer tests
 // =============================================================================
 
 #[tokio::test]
