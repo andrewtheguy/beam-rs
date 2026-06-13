@@ -4,13 +4,11 @@
 
 This document provides a detailed walkthrough of the beam-rs implementation.
 
-beam-rs supports two main categories of transport:
+beam-rs supports the following transfer modes (all beam code based):
 
-1. **Internet Transfers** (beam code based):
-    - **iroh Mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`
-    - **Tor Mode**: Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`
-2. **Serverless Transfers** (using `beam-rs send --no-server`):
-    - **No-server Mode**: transfers using the iroh QUIC/TLS stack with relays disabled (no third-party server). The sender embeds the direct addresses discovered before the code is printed (LAN and any public/port-mapped addresses) in the beam code so the receiver connects directly, with mDNS as a fallback. Uses the same beam code format as iroh mode.
+1. **iroh Mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`. Requires internet access.
+2. **Serverless Mode** - transfers using the iroh QUIC/TLS stack with relays disabled (no third-party server) via `beam-rs send --serverless`. The sender embeds the direct addresses discovered before the code is printed (LAN and any public/port-mapped addresses) in the beam code so the receiver connects directly, with mDNS as a fallback. Uses the same beam code format as iroh mode; the only mode that works without internet access.
+3. **Tor Mode** - Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`. Requires internet access.
 
 ## Transfer Flows
 
@@ -61,9 +59,9 @@ sequenceDiagram
     Receiver->>Sender: 9. Send Encrypted ACK
 ```
 
-#### No-server Mode (iroh with relays disabled)
+#### Serverless Mode (iroh with relays disabled)
 
-No-server mode is for transfers without any third-party server (no relay, no
+Serverless mode is for transfers without any third-party server (no relay, no
 Nostr), and is primarily intended for the same LAN. It is the **same** iroh
 transport and beam code as the default mode, with one difference: relays are
 disabled (`RelayMode::Disabled`). The sender waits up to 10 seconds for direct
@@ -75,7 +73,7 @@ propagates. The receiver auto-detects this mode from the missing relay URL and
 connects directly to the embedded addresses, falling back to mDNS. It is not
 strictly local-only — enforcing that would be an unnecessary burden — so a WAN
 connection may succeed when a public/port-mapped address is reachable, though
-NAT and firewalls commonly prevent it. (In no-server mode DNS is not used at
+NAT and firewalls commonly prevent it. (In serverless mode DNS is not used at
 all — mDNS handles address lookup — so relay hostname resolution never applies.)
 
 ```mermaid
@@ -90,7 +88,7 @@ sequenceDiagram
 
     Note over Sender: User shares beam code out-of-band
 
-    Receiver->>Receiver: 4. Parse code, detect no relay -> no-server
+    Receiver->>Receiver: 4. Parse code, detect no relay -> serverless
     Receiver->>Sender: 5. Connect directly to embedded IPs (mDNS fallback) over QUIC (ALPN beam-transfer/1)
 
     Note over Sender,Receiver: From here identical to iroh mode
@@ -149,7 +147,7 @@ sequenceDiagram
 - **PIN Support**: Yes (`beam-rs send --pin`; the receiver runs `beam-rs receive` and enters the PIN at the prompt — it is auto-detected vs. a full beam code)
 - **Encryption**: Always AES-256-GCM encrypted at the application layer, plus QUIC/TLS encryption.
 
-### No-server Mode (`beam-rs send --no-server`)
+### Serverless Mode (`beam-rs send --serverless`)
 - **Transport**: QUIC / TLS 1.3 (same as iroh mode)
 - **Discovery**: Direct addresses embedded in the beam code (the IPs iroh discovered before the code was printed — LAN and any public/port-mapped addresses), with mDNS address lookup as a fallback; relays disabled (`RelayMode::Disabled`)
 - **Key Exchange**: Beam code (carries the AES key and an endpoint address with embedded IPs and no relay URL)
@@ -178,7 +176,7 @@ iroh mode uses two encryption layers for defense in depth:
 
 ### PIN-based Key Exchange (PIN Mode)
 PIN mode is available for the default iroh transport (`beam-rs send --pin`). It
-is not available for iroh `--no-server` or Tor.
+is not available for iroh `--serverless` or Tor.
 
 PIN mode exchanges the beam code through Nostr keyed by a short PIN, then runs
 a SPAKE2 handshake over the established QUIC stream to derive the session key.
@@ -205,7 +203,7 @@ All beam codes include a creation timestamp and are validated against a TTL to p
 - **Clock Skew**: Allows up to 60 seconds into the future to handle minor clock drift
 
 **Validation Points:**
-1. **Beam Codes** (iroh, iroh `--no-server`, tor): Validated in `parse_code()` before connection. No-server codes use the same v4 token format and are validated the same way.
+1. **Beam Codes** (iroh, iroh `--serverless`, Tor): Validated in `parse_code()` before connection. Serverless codes use the same v4 token format and are validated the same way.
 2. **PIN Mode**: The Nostr event can live for up to 2 hours to survive hourly hint bucket boundaries, but the decrypted beam code is still parsed through the same 60-minute TTL validation.
 
 **Error Messages:**
@@ -216,7 +214,7 @@ All beam codes include a creation timestamp and are validated against a TTL to p
 
 ### Encrypted Message Format (Stream-based transports)
 
-All encrypted messages (used by Iroh, iroh `--no-server`, and Tor modes) follow this format:
+All encrypted messages (used by Iroh, iroh `--serverless`, and Tor modes) follow this format:
 
 ```
 [length: 4 bytes BE][encrypted_payload]
