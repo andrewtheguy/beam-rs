@@ -63,12 +63,8 @@ cargo build --release
 
 ## Usage
 
-### Internet Transfers
-
-Use these modes for transfers over the internet. They all use a **Beam Code** for connection.
-
-#### 1. iroh Mode (Recommended) - `send`
-*Direct P2P transport using QUIC/TLS with automatic relay fallback. Most reliable for both small and large files.*
+### 1. iroh Mode (Recommended) - `send`
+*Direct P2P transport using QUIC/TLS with automatic relay fallback. Most reliable for both small and large files. Requires internet access.*
 
 ```bash
 # Send file
@@ -78,7 +74,7 @@ beam-rs send /path/to/file
 beam-rs send /path/to/folder --folder
 ```
 
-##### Custom Iroh Relays
+#### Custom Iroh Relays
 - Default behavior uses iroh's public relay fallback plus direct P2P.
 - For self-hosted setups, set the relay(s) on the **sender** only — they are
   embedded in the beam code, so the receiver adopts them automatically:
@@ -88,49 +84,8 @@ beam-rs send /path/to/folder --folder
     ```
 - Multiple `--relay-url` flags are supported for failover.
 
-#### 2. Tor Mode - `send --tor`
-*Anonymous transfers via Tor hidden services. Use when anonymity is required.*
-
-```bash
-beam-rs send --tor /path/to/file
-```
-
-#### Receiving (Internet)
-`beam-rs receive` handles both iroh and Tor codes — the transport is auto-detected
-from the beam code.
-
-```bash
-beam-rs receive
-# Prompts for the beam code or PIN (a 12-character PIN is auto-detected and
-# resolved via Nostr).
-
-# Optional output directory
-beam-rs receive --output /path/to/downloads
-
-# Disable file resume state for this receive
-beam-rs receive --no-resume
-```
-
----
-
-### Serverless Transfers
-
-**No third-party server (primarily for same-network/LAN transfers)**
-- `beam-rs send --serverless`: iroh transport with relays disabled; the sender
-  embeds the direct addresses discovered before the code is printed (LAN and any
-  public/port-mapped addresses) in the beam code, with mDNS kept as a discovery
-  fallback
-- No relay or Nostr server is contacted; share the printed beam code with the receiver
-- The expected use case is a shared LAN. It is not *strictly* local-only —
-  enforcing that would be an unnecessary burden — so a WAN connection can
-  succeed if a public/port-mapped address happens to be reachable, but NAT and
-  firewalls usually prevent that.
-
-> **Note**: Serverless mode is the option for offline/LAN transfers — it contacts
-> no relay or Nostr server at all. The other modes need internet access: iroh's
-> default relay fallback and Tor both reach out to third-party servers.
-
-#### Serverless (`--serverless`)
+### 2. Serverless Mode - `send --serverless`
+*No third-party server (primarily for same-network/LAN transfers). The only mode that works without internet access.*
 
 Use this mode to transfer without any third-party server (no relay, no Nostr).
 It uses the same iroh transport and beam code as the default mode, but disables
@@ -158,6 +113,29 @@ beam-rs receive
 
 > `--serverless` cannot be combined with `--pin` (PIN exchange uses Nostr, a
 > third-party server) or `--relay-url` (relays are disabled).
+
+### 3. Tor Mode - `send --tor`
+*Anonymous transfers via Tor hidden services. Use when anonymity is required. Requires internet access.*
+
+```bash
+beam-rs send --tor /path/to/file
+```
+
+### Receiving
+`beam-rs receive` handles iroh, serverless, and Tor codes — the transport is
+auto-detected from the beam code.
+
+```bash
+beam-rs receive
+# Prompts for the beam code or PIN (a 12-character PIN is auto-detected and
+# resolved via Nostr).
+
+# Optional output directory
+beam-rs receive --output /path/to/downloads
+
+# Disable file resume state for this receive
+beam-rs receive --no-resume
+```
 
 ## Common Use Cases
 

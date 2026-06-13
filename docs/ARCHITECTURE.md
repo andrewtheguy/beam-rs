@@ -4,13 +4,11 @@
 
 This document provides a detailed walkthrough of the beam-rs implementation.
 
-beam-rs supports two main categories of transport:
+beam-rs supports the following transfer modes (all beam code based):
 
-1. **Internet Transfers** (beam code based):
-    - **iroh Mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`
-    - **Tor Mode**: Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`
-2. **Serverless Transfers** (using `beam-rs send --serverless`):
-    - **Serverless Mode**: transfers using the iroh QUIC/TLS stack with relays disabled (no third-party server). The sender embeds the direct addresses discovered before the code is printed (LAN and any public/port-mapped addresses) in the beam code so the receiver connects directly, with mDNS as a fallback. Uses the same beam code format as iroh mode.
+1. **iroh Mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`. Requires internet access.
+2. **Serverless Mode** - transfers using the iroh QUIC/TLS stack with relays disabled (no third-party server) via `beam-rs send --serverless`. The sender embeds the direct addresses discovered before the code is printed (LAN and any public/port-mapped addresses) in the beam code so the receiver connects directly, with mDNS as a fallback. Uses the same beam code format as iroh mode; the only mode that works without internet access.
+3. **Tor Mode** - Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`. Requires internet access.
 
 ## Transfer Flows
 
@@ -205,7 +203,7 @@ All beam codes include a creation timestamp and are validated against a TTL to p
 - **Clock Skew**: Allows up to 60 seconds into the future to handle minor clock drift
 
 **Validation Points:**
-1. **Beam Codes** (iroh, iroh `--serverless`, tor): Validated in `parse_code()` before connection. Serverless codes use the same v4 token format and are validated the same way.
+1. **Beam Codes** (iroh, iroh `--serverless`, Tor): Validated in `parse_code()` before connection. Serverless codes use the same v4 token format and are validated the same way.
 2. **PIN Mode**: The Nostr event can live for up to 2 hours to survive hourly hint bucket boundaries, but the decrypted beam code is still parsed through the same 60-minute TTL validation.
 
 **Error Messages:**
