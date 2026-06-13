@@ -44,8 +44,14 @@ fn is_retryable(e: &arti_client::Error) -> bool {
     )
 }
 
-/// Receive a file via Tor hidden service
-pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result<()> {
+/// Receive a file via Tor hidden service.
+///
+/// `no_resume` disables receiver-side partial file state for file transfers.
+pub async fn receive_file_tor(
+    code: &str,
+    output_dir: Option<PathBuf>,
+    no_resume: bool,
+) -> Result<()> {
     ui::sink().set_phase(Phase::Connecting);
     ui::sink().status("Parsing beam code...");
 
@@ -128,13 +134,13 @@ pub async fn receive_file_tor(code: &str, output_dir: Option<PathBuf>) -> Result
 
     ui::sink().status("Connected!");
 
-    // Run unified receiver transfer with timeout (no resume for Tor receiver by default)
+    // Run unified receiver transfer with timeout.
     // Stream is dropped when function returns or on timeout; no explicit close needed for Tor streams
     ui::sink().set_phase(Phase::Transferring);
     let transfer_timeout = get_transfer_timeout();
     let transfer_result = timeout(
         transfer_timeout,
-        run_receiver_transfer(stream, key, output_dir, false),
+        run_receiver_transfer(stream, key, output_dir, no_resume),
     )
     .await;
 

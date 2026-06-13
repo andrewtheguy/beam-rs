@@ -1,7 +1,7 @@
 //! Common PIN utilities for beam transfers.
 //!
 //! Provides PIN generation with an unambiguous character set
-//! for use across all transport modes (mDNS, Nostr PIN exchange, etc.).
+//! for use by PIN-based exchange flows.
 //!
 //! PIN format: 11 random characters + 1 checksum character (12 total).
 //! The checksum detects most typos before attempting connection.

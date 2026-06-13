@@ -6,7 +6,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 **Scenario**: You need to transfer files without relying on any third-party server (relay or Nostr), typically on a shared LAN or an air-gapped network.
 
 **Solution**: **No-server Mode** (`beam-rs send --no-server`)
-- **Why**: Same iroh transport as the default mode, but with relays disabled. The sender embeds every direct address iroh discovered (LAN interfaces and any public/port-mapped addresses) in the beam code, so the receiver attempts them all directly, with mDNS as a fallback. No relay or Nostr server is contacted. The expected use case is a shared LAN — it is not *strictly* local-only (enforcing that would be an unnecessary burden), so a WAN connection can succeed if a public/port-mapped address happens to be reachable, but NAT/firewalls usually prevent it.
+- **Why**: Same iroh transport as the default mode, but with relays disabled. The sender embeds the direct addresses discovered before the code is printed (LAN interfaces and any public/port-mapped addresses) in the beam code, so the receiver attempts them all directly, with mDNS as a fallback. No relay or Nostr server is contacted. The expected use case is a shared LAN — it is not *strictly* local-only (enforcing that would be an unnecessary burden), so a WAN connection can succeed if a public/port-mapped address happens to be reachable, but NAT/firewalls usually prevent it.
 - **Command**:
   ```bash
   # Sender
@@ -15,7 +15,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   # Receiver (paste the printed beam code at the prompt; no-server is auto-detected)
   beam-rs receive
   ```
-- **Experience**: The sender prints a beam code once it has a direct address. Share the code out-of-band; the receiver auto-detects no-server mode from the code (no relay URL) and connects directly via the embedded addresses.
+- **Experience**: The sender waits briefly for direct address discovery and then prints a beam code. Share the code out-of-band; the receiver auto-detects no-server mode from the code (no relay URL) and connects directly via the embedded addresses or mDNS.
 
 ---
 
@@ -40,7 +40,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 **Scenario**: You are sending a file from a laptop to a friend's phone, or to a remote server console where you cannot easily copy and paste the long "Beam Code". Typing a huge base64 string is impossible.
 
 **Solution A**: **PIN Mode** (Recommended when copy-paste is hard)
-- **Why**: Uses a short 12-character PIN instead of a long code. The PIN is exchanged via Nostr relays, while the actual file transfer uses the default iroh transport. Requires internet for the Nostr exchange.
+- **Why**: Uses a short 12-character PIN instead of typing a long code. The receiver uses the PIN to find and decrypt the beam code from Nostr, then the peers derive the content-encryption key with SPAKE2 over the default iroh transport. Requires internet for the Nostr exchange.
 - **Command**:
   ```bash
   # Sender (default iroh transport with PIN exchange)
@@ -55,7 +55,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
      auto-detected (vs. a full beam code) and resolved via Nostr.
 
 **Solution B**: **No-server Mode** (No third-party server)
-- **Why**: Contacts no relay or Nostr server (relays disabled); the sender embeds its discovered IPs in the beam code and the receiver connects directly, with mDNS as a fallback. Note this still requires moving the beam code between devices — handy when you can scan/share the code but want zero third-party involvement.
+- **Why**: Contacts no relay or Nostr server (relays disabled); the sender embeds its discovered direct addresses in the beam code and the receiver connects directly, with mDNS as a fallback. Note this still requires moving the beam code between devices — handy when you can scan/share the code but want zero third-party involvement.
 - **Command**:
   ```bash
   # Sender
@@ -113,7 +113,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 **Scenario**: You require complete control over the network infrastructure and cannot rely on public relays due to policy or privacy concerns.
 
 **Solution A**: **iroh Mode + Custom DERP Relays** (Recommended)
-- **Why**: iroh allows you to run your own lightweight relay (DERP). By pointing `beam-rs` to your own infrastructure, you achieve a true peer-to-peer connection where no third-party relays are involved.
+- **Why**: iroh allows you to run your own relay. By pointing `beam-rs` to your own infrastructure, you avoid public third-party relays; iroh still attempts direct P2P first and uses your relay as fallback if needed.
 - **Resources**: Implementation for the relay server is available in the [iroh repository](https://github.com/n0-computer/iroh).
 - **Command**:
   ```bash
@@ -123,7 +123,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   automatically — just run `beam-rs receive`, no relay flag needed.
 
 **Solution B**: **No-server Mode** (No third-party server)
-- **Why**: Relays disabled and no external dependencies; the sender's discovered IPs are embedded in the beam code, with mDNS as a fallback. Works completely offline on a shared LAN.
+- **Why**: Relays disabled and no external dependencies; the sender's discovered direct addresses are embedded in the beam code, with mDNS as a fallback. Works completely offline on a shared LAN.
 - **Command**:
   ```bash
   beam-rs send --no-server /path/to/file

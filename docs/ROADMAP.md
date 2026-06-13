@@ -12,7 +12,7 @@ Ideas and feature requests for future consideration.
   - The overwrite-existing-file confirmation, and any other `prompt_line` / confirm calls.
   Each of these needs a defined non-interactive behavior (read from stdin, or a safe default such as fail-closed on overwrite) — designing one in isolation would leave the others inconsistent.
 - **Open question — mechanism is undecided:**
-  - Could be *implied* by the existing `--no-tui` flag (which already means "no interactive terminal"), rather than a new dedicated flag.
+  - Could be *implied* by the existing `--no-tui` flag (which currently means "plain line output instead of the inline TUI"), rather than a new dedicated flag.
   - Or an explicit flag (e.g. reading the code/PIN from stdin: `echo <CODE> | beam-rs receive`). Stdin keeps the secret out of `argv` (avoids leaking into process listings / shell history).
   - Decision deferred until the whole flow is designed together.
 - **Applies to:** both the iroh and Tor (`--tor`) transports of `beam-rs`.
@@ -29,7 +29,7 @@ Ideas and feature requests for future consideration.
   - `--no-server` — no third-party server (relays/Nostr disabled), primarily for same-LAN transfers.
   - `--relay-url` — custom relay servers.
 - **Should encode the constraints:** e.g. `--no-server` is mutually exclusive with `--pin` and `--relay-url`, so the wizard should prevent invalid combinations rather than erroring after the fact.
-- **Builds on:** the existing inline TUI (the `tui` module in `beam-rs`); honors `--no-tui` (wizard disabled / falls back to flags when there's no interactive terminal).
+- **Builds on:** the existing inline TUI (the `tui` module in `beam-rs`); honors `--no-tui` and non-terminal output by disabling the wizard and falling back to explicit flags.
 
 ### Browser-Accessible Tor Downloads
 **Domain:** Tor Mode

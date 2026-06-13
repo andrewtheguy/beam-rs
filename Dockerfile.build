@@ -15,7 +15,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-${TARGETPLATFORM} \
     --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git-${TARGETPLATFORM} \
     --mount=type=cache,target=/build/target,id=cargo-target-${TARGETPLATFORM} \
-    cargo build --release --all-features && \
+    cargo build --release && \
     cp target/release/beam-rs /beam-rs
 
 # Export stage - only contains the binary
