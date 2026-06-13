@@ -571,6 +571,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "argon2",
+ "arti-client",
  "base64",
  "beam-common",
  "clap",
@@ -584,27 +585,9 @@ dependencies = [
  "rand 0.8.6",
  "reqwest",
  "rustls",
+ "safelog",
  "serde_json",
  "spake2",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "beam-rs-tor"
-version = "0.0.19"
-dependencies = [
- "anyhow",
- "arti-client",
- "beam-common",
- "clap",
- "futures",
- "hex",
- "log",
- "rand 0.8.6",
- "safelog",
  "tempfile",
  "tokio",
  "tokio-util",

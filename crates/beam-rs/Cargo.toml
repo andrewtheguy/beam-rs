@@ -42,5 +42,11 @@ iroh-mdns-address-lookup = "0.3.0"
 hickory-resolver = "0.26.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
+# Tor/Onion transport
+arti-client = { version = "0.43", features = ["onion-service-service", "onion-service-client", "tokio", "static-sqlite"] }
+tor-hsservice = "0.43"
+tor-cell = "0.43"
+safelog = "0.8"
+
 # Tracing
 tracing-subscriber = { workspace = true }

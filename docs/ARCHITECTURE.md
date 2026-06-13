@@ -8,7 +8,7 @@ beam-rs supports two main categories of transport:
 
 1. **Internet Transfers** (beam code based):
     - **iroh Mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`
-    - **Tor Mode**: Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs-tor send`
+    - **Tor Mode**: Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`
 2. **Serverless Transfers** (using `beam-rs send --no-server`):
     - **No-server Mode**: transfers using the iroh QUIC/TLS stack with relays disabled (no third-party server). The sender embeds all of its discovered IPs (LAN and any public/port-mapped addresses) in the beam code so the receiver connects directly, with mDNS as a fallback. Uses the same beam code format as iroh mode.
 
@@ -155,7 +155,7 @@ sequenceDiagram
 - **Encryption**: Always AES-256-GCM at the application layer, plus QUIC/TLS encryption
 - **Reachability**: Primarily intended for the same LAN. The sender waits for at least one direct address before printing the code so the embedded addresses are populated (it cannot wait for a relay, since relays are disabled). Not strictly local-only — a WAN connection may succeed when a public/port-mapped address is reachable, but NAT/firewalls commonly prevent it. Incompatible with `--pin` and `--relay-url`.
 
-### Tor Mode (`beam-rs-tor send`)
+### Tor Mode (`beam-rs send --tor`)
 - **Transport**: Tor Onion Services
 - **Discovery**: Onion Address
 - **PIN Support**: No

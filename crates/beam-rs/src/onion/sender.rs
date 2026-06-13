@@ -18,6 +18,8 @@ use beam_common::core::transfer::{
 use beam_common::core::beam::generate_tor_code;
 use beam_common::ui::{self, Phase};
 
+use crate::cli::instructions::print_receiver_command;
+
 /// Timeout for waiting for receiver to connect via Tor (10 minutes)
 /// Tor connections can be slow due to circuit building, so this is generous
 const TOR_CONNECTION_TIMEOUT: Duration = Duration::from_secs(600);
@@ -25,11 +27,6 @@ const TOR_CONNECTION_TIMEOUT: Duration = Duration::from_secs(600);
 /// Timeout for waiting for receiver's ACK after transfer completes.
 /// Tor streams may close abruptly, so a timeout here is treated as success.
 const ACK_TIMEOUT: Duration = Duration::from_secs(10);
-
-fn print_receiver_command(command: &str) {
-    ui::sink().info("On the receiving end, run:");
-    ui::sink().info(&format!("  {}\n", command));
-}
 
 /// Internal helper for common Tor transfer logic.
 /// Handles Tor bootstrap, onion service, connection, data transfer, and acknowledgment.
@@ -84,7 +81,7 @@ async fn transfer_data_tor_internal(
     // Generate beam code
     let code = generate_tor_code(onion_addr_str.clone(), &key)?;
 
-    print_receiver_command("beam-rs-tor receive");
+    print_receiver_command("beam-rs receive");
 
     ui::sink().show_code(&code);
     ui::sink().info("Then enter the code above when prompted.\n");

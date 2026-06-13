@@ -14,6 +14,9 @@ use auth::PinInfo;
 mod iroh;
 use iroh::{receiver as iroh_receiver, sender as iroh_sender};
 
+mod onion;
+use onion::{receiver as onion_receiver, sender as onion_sender};
+
 mod cli;
 
 #[derive(Parser)]
@@ -56,6 +59,11 @@ enum Commands {
         /// --relay-url.
         #[arg(long)]
         no_server: bool,
+
+        /// Send via a Tor hidden service (anonymous) instead of iroh.
+        /// Incompatible with --pin, --relay-url, and --no-server.
+        #[arg(long)]
+        tor: bool,
     },
 
     /// Receive a file or folder using a beam code or PIN
@@ -173,6 +181,20 @@ fn init_tracing(discard: bool) {
 
             .add_directive("quinn=warn".parse().unwrap())
             .add_directive("quinn_proto=warn".parse().unwrap())
+
+            // Suppress noisy arti/tor internal logs (Tor transport)
+            .add_directive("arti=warn".parse().unwrap())
+            .add_directive("arti_client=warn".parse().unwrap())
+            .add_directive("tor_proto=warn".parse().unwrap())
+            .add_directive("tor_chanmgr=warn".parse().unwrap())
+            .add_directive("tor_circmgr=off".parse().unwrap())
+            .add_directive("tor_guardmgr=warn".parse().unwrap())
+            .add_directive("tor_netdir=warn".parse().unwrap())
+            .add_directive("tor_dirmgr=warn".parse().unwrap())
+            .add_directive("tor_hsservice=warn".parse().unwrap())
+            .add_directive("tor_hsclient=warn".parse().unwrap())
+            .add_directive("tor_rtcompat=warn".parse().unwrap())
+            .add_directive("tor_persist=off".parse().unwrap())
     });
 
     let builder = tracing_subscriber::fmt()
@@ -234,8 +256,23 @@ async fn run(command: Commands) -> Result<()> {
             pin,
             relay_url,
             no_server,
+            tor,
         } => {
             validate_path(&path, folder)?;
+            if tor && (pin || no_server || !relay_url.is_empty()) {
+                anyhow::bail!(
+                    "--tor cannot be combined with --pin, --no-server, or --relay-url: \
+                     those options configure the iroh transport, which --tor replaces."
+                );
+            }
+            if tor {
+                if folder {
+                    onion_sender::send_folder_tor(&path).await?;
+                } else {
+                    onion_sender::send_file_tor(&path).await?;
+                }
+                return Ok(());
+            }
             if no_server && pin {
                 anyhow::bail!(
                     "--no-server cannot be combined with --pin: PIN exchange uses Nostr, \
@@ -317,10 +354,10 @@ async fn receive_with_code(
             iroh_receiver::receive(code, output, no_resume, pin_info, no_server).await?;
         }
         beam::PROTOCOL_TOR => {
-            anyhow::bail!(
-                "This beam code uses Tor transport.\n\
-                 To receive via Tor, use: beam-rs-tor receive (it will prompt for the code)"
-            );
+            // A Tor code carries an onion address; bootstrap the Tor client and
+            // connect anonymously. `no_resume`/`pin_info` are iroh-only and do
+            // not apply to the Tor transport.
+            onion_receiver::receive_file_tor(code, output).await?;
         }
         proto => {
             anyhow::bail!("Unknown protocol in beam code: {}", proto);
