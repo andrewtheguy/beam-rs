@@ -1,6 +1,6 @@
 [package]
 name = "beam-rs"
-version = "0.0.22"
+version = "0.0.23"
 edition = "2024"
 
 [lib]
@@ -53,8 +53,8 @@ nostr-sdk = "0.44.1"
 reqwest = { version = "0.13", features = ["json", "multipart", "stream"] }
 
 # iroh transport
-iroh = "1.0.0-rc.1"
-iroh-mdns-address-lookup = "0.3.0"
+iroh = "1.0.0"
+iroh-mdns-address-lookup = "0.4.0"
 # Used to probe the host DNS config before binding; see beam_dns_resolver.
 # Pinned to the same version iroh pulls in so cargo unifies on one copy.
 hickory-resolver = "0.26.1"
