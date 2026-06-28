@@ -22,7 +22,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 ## 2. Cross-Subnet / VPN Discovery Issues
 **Scenario**: mDNS discovery doesn't work because peers are on different subnets, across VPNs, or on networks that block multicast.
 
-**Solution**: **iroh Mode**
+**Solution**: **Default Iroh mode**
 - **Why**: iroh connects peers across network boundaries using relay infrastructure—no manual IP input required. Requires internet access.
 - **Command**:
   ```bash
@@ -70,7 +70,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 ## 4. Strict Firewalls / Restricted Networks
 **Scenario**: You are on a corporate or university network that blocks UDP, non-standard ports, and direct P2P connections. Standard transfers hang or fail.
 
-**Solution A**: **iroh Mode** (Recommended)
+**Solution A**: **Default Iroh mode** (Recommended)
 - **Why**: iroh uses QUIC with automatic relay fallback. It tries direct P2P first, then falls back to iroh's relay servers if needed.
 - **Command**:
   ```bash
@@ -101,7 +101,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 ## 6. Large File Transfer
 **Scenario**: Transferring a massive dataset (GBs) over the internet.
 
-**Solution**: **iroh Mode** (Recommended)
+**Solution**: **Default Iroh mode** (Recommended)
 - **Why**: Uses QUIC, optimized for high throughput and congestion control. Automatic relay fallback ensures reliable delivery.
   ```bash
   beam-rs send /path/to/large-video.mp4
@@ -112,7 +112,7 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 ## 7. Self-Hosted Infrastructure (Zero Third-Party Dependency)
 **Scenario**: You require complete control over the network infrastructure and cannot rely on public relays due to policy or privacy concerns.
 
-**Solution A**: **iroh Mode + Custom DERP Relays** (Recommended)
+**Solution A**: **Default Iroh mode + Custom DERP Relays** (Recommended)
 - **Why**: iroh allows you to run your own relay. By pointing `beam-rs` to your own infrastructure, you avoid public third-party relays; iroh still attempts direct P2P first and uses your relay as fallback if needed.
 - **Resources**: Implementation for the relay server is available in the [iroh repository](https://github.com/n0-computer/iroh).
 - **Command**:

@@ -6,7 +6,7 @@ This document provides a detailed walkthrough of the beam-rs implementation.
 
 beam-rs supports the following transfer modes (all beam code based):
 
-1. **iroh Mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`. Requires internet access.
+1. **Default Iroh mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`. Requires internet access.
 2. **Serverless Mode** - transfers using the iroh QUIC/TLS stack with relays disabled (no third-party server) via `beam-rs send --serverless`. The sender embeds the direct addresses discovered before the code is printed (LAN and any public/port-mapped addresses) in the beam code so the receiver connects directly, with mDNS as a fallback. Uses the same beam code format as iroh mode; the only mode that works without internet access.
 3. **Tor Mode** - Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`. Requires internet access.
 
@@ -14,7 +14,7 @@ beam-rs supports the following transfer modes (all beam code based):
 
 ### 1. iroh Transfers
 
-#### Default iroh Mode (Recommended) - QUIC / Direct + Relay
+#### Default Iroh mode (Recommended) - QUIC / Direct + Relay
 
 iroh uses a "hole punching" strategy that attempts direct connections via UDP/QUIC while simultaneously establishing a fallback path through a Relay (DERP) server.
 
@@ -137,7 +137,7 @@ sequenceDiagram
 
 ## Connection Types/Modes
 
-### Default iroh Mode (`beam-rs send`) - Recommended
+### Default Iroh mode (`beam-rs send`) - Recommended
 - **Transport**: QUIC / TLS 1.3
 - **Discovery**: Selected relay URL embedded in the beam code, optional custom relay list from `--relay-url`, plus mDNS for local network.
 - **Relay**: iroh relays (DERP) - automatically used if direct P2P connection fails.
@@ -163,8 +163,8 @@ sequenceDiagram
 
 ## Security Model
 
-### iroh Mode Encryption (Dual Layer)
-iroh mode uses two encryption layers for defense in depth:
+### Default Iroh mode Encryption (Dual Layer)
+Default Iroh mode uses two encryption layers for defense in depth:
 
 **Transport Layer (iroh/QUIC)**:
 - TLS 1.3/QUIC encryption (cipher negotiated by iroh/quinn)

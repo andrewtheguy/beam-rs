@@ -63,7 +63,7 @@ cargo build --release
 
 ## Usage
 
-### 1. iroh Mode (Recommended) - `send`
+### 1. Default Iroh mode (Recommended) - `send`
 *Direct P2P transport using QUIC/TLS with automatic relay fallback. Most reliable for both small and large files. Requires internet access.*
 
 ```bash
