@@ -175,21 +175,31 @@ fn format_paths(paths: &PathList<'_>) -> String {
 }
 
 /// RAII guard that aborts the background path watcher task on drop.
-pub struct PathWatcherGuard(JoinHandle<()>);
+pub struct PathWatcherGuard(Option<JoinHandle<()>>);
 
 impl Drop for PathWatcherGuard {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(handle) = &self.0 {
+            handle.abort();
+        }
     }
 }
 
-/// Print the current connection paths and spawn a background task that
-/// prints updates whenever the active path changes (e.g. relay -> direct).
+/// Log the current connection paths and spawn a background task that logs
+/// updates whenever the active path changes (e.g. relay -> direct).
 ///
-/// The returned guard aborts the background task when dropped.
+/// Logging is the task's sole purpose, so when debug logging is disabled the
+/// task is not spawned and the returned guard is inert.
+///
+/// The returned guard aborts the background task when dropped; callers must
+/// keep it alive for the duration of the connection.
 pub fn watch_connection_paths(conn: &Connection) -> PathWatcherGuard {
+    if !log::log_enabled!(log::Level::Debug) {
+        return PathWatcherGuard(None);
+    }
+
     let conn = conn.clone();
-    PathWatcherGuard(tokio::spawn(async move {
+    PathWatcherGuard(Some(tokio::spawn(async move {
         // The stream yields the current snapshot on the first poll, then a
         // fresh snapshot whenever the open or selected paths change; it ends
         // when the connection closes.
@@ -198,11 +208,11 @@ pub fn watch_connection_paths(conn: &Connection) -> PathWatcherGuard {
         while let Some(paths) = stream.next().await {
             let formatted = format_paths(&paths);
             if last.as_deref() != Some(formatted.as_str()) {
-                beam_rs::ui::sink().status(&format!("   Connection: {}", formatted));
+                log::debug!("Connection: {}", formatted);
                 last = Some(formatted);
             }
         }
-    }))
+    })))
 }
 
 /// Application-Layer Protocol Negotiation identifier for beam transfers.

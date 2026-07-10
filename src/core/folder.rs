@@ -421,25 +421,23 @@ fn is_path_within_dir(target: &Path, base: &Path) -> bool {
 
 /// Print folder creation info messages.
 pub fn print_tar_creation_info() {
-    let sink = crate::ui::sink();
     #[cfg(unix)]
-    sink.status("   File modes (e.g., 0755) will be preserved; owner/group will not.");
+    crate::ui::status("   File modes (e.g., 0755) will be preserved; owner/group will not.");
     #[cfg(windows)]
-    sink.status("   Note: Windows does not support Unix file modes.");
-    sink.status("   Symlinks are included; special files (devices, FIFOs) are skipped.");
+    crate::ui::status("   Note: Windows does not support Unix file modes.");
+    crate::ui::status("   Symlinks are included; special files (devices, FIFOs) are skipped.");
 }
 
 /// Print folder extraction info messages.
 pub fn print_tar_extraction_info() {
-    let sink = crate::ui::sink();
     #[cfg(unix)]
-    sink.status("   File modes (e.g., 0755) will be preserved; owner/group will not.");
+    crate::ui::status("   File modes (e.g., 0755) will be preserved; owner/group will not.");
     #[cfg(windows)]
     {
-        sink.status("   Note: Unix file modes are not supported on Windows.");
-        sink.status("   Symlinks require admin privileges and may be skipped.");
+        crate::ui::status("   Note: Unix file modes are not supported on Windows.");
+        crate::ui::status("   Symlinks require admin privileges and may be skipped.");
     }
-    sink.status("   Special files (devices, FIFOs) will be skipped if present.");
+    crate::ui::status("   Special files (devices, FIFOs) will be skipped if present.");
 }
 
 /// Determine the extraction directory for a folder transfer.
@@ -469,13 +467,12 @@ pub fn get_extraction_dir(output_dir: Option<PathBuf>) -> PathBuf {
 /// Print skipped entries warning if any were skipped during extraction.
 pub fn print_skipped_entries(skipped_entries: &[String]) {
     if !skipped_entries.is_empty() {
-        let sink = crate::ui::sink();
-        sink.status(&format!(
+        crate::ui::status(&format!(
             "\n⚠️  Skipped {} entries (not supported on this platform):",
             skipped_entries.len()
         ));
         for entry in skipped_entries {
-            sink.status(&format!("   - {}", entry));
+            crate::ui::status(&format!("   - {}", entry));
         }
     }
 }
