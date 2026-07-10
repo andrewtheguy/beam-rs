@@ -1,10 +1,14 @@
 //! User-facing terminal output and prompts shared by all transports.
 
 use anyhow::{Result, anyhow};
+use rustyline::DefaultEditor;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::core::transfer::{FileExistsChoice, calc_percent, format_bytes};
+
+static EDITOR: Mutex<Option<DefaultEditor>> = Mutex::new(None);
 
 /// Write a status line to stderr.
 pub fn status(line: &str) {
@@ -93,9 +97,14 @@ pub fn confirm_large_folder(size: u64, name: &str) -> Result<bool> {
 
 /// Read a line, optionally pre-filling the editable input buffer.
 pub fn prompt_line(prompt: &str, initial: &str) -> Result<String> {
-    use rustyline::DefaultEditor;
+    let mut editor = EDITOR
+        .lock()
+        .map_err(|e| anyhow!("Failed to lock line editor: {e}"))?;
+    if editor.is_none() {
+        *editor = Some(DefaultEditor::new().map_err(|e| anyhow!(e.to_string()))?);
+    }
+    let rl = editor.as_mut().expect("line editor was initialized");
 
-    let mut rl = DefaultEditor::new().map_err(|e| anyhow!(e.to_string()))?;
     let readline = if initial.is_empty() {
         rl.readline(prompt)
     } else {
