@@ -38,15 +38,8 @@ walkdir = "2"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 crc32fast = "1.4"
 
-# Interactive line prompts in the UI sink
+# Interactive line prompts
 rustyline = "18"
-
-# Inline terminal UI
-ratatui = "0.30"
-crossterm = { version = "0.29", features = ["event-stream"] }
-# Used only on unix (to re-raise SIGINT for graceful cancel), but builds everywhere.
-# Pinned to 0.3 to unify with crossterm's transitive signal-hook (avoids a duplicate copy).
-signal-hook = "0.3"
 
 # Nostr signaling + HTTP client for relay fetching
 nostr-sdk = "0.44.1"

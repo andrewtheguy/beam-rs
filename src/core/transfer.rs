@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::core::crypto::{CHUNK_SIZE, decrypt, encrypt};
 use crate::core::folder::{create_tar_archive, print_tar_creation_info};
 use crate::core::resume::calculate_file_checksum;
-use crate::ui::{self, Direction, Progress};
+use crate::ui;
 
 /// Error returned when a transfer is interrupted by Ctrl+C.
 ///
@@ -428,7 +428,7 @@ pub async fn confirm_large_folder_transfer(file_size: u64, filename: &str) -> Re
     // Capture values needed in the blocking closure
     let filename = filename.to_string();
 
-    tokio::task::spawn_blocking(move || ui::sink().confirm_large_folder(file_size, &filename))
+    tokio::task::spawn_blocking(move || ui::confirm_large_folder(file_size, &filename))
         .await
         .context("Blocking task panicked")?
 }
@@ -455,14 +455,14 @@ pub async fn prepare_file_for_send(file_path: &Path) -> Result<Option<PreparedFi
         .context("Invalid filename")?
         .to_string();
 
-    ui::sink().info(&format!(
+    ui::info(&format!(
         "📁 Preparing to send: {} ({})",
         filename,
         format_bytes(file_size)
     ));
 
     // Calculate checksum for resumable transfers
-    ui::sink().info("   Calculating checksum...");
+    ui::info("   Calculating checksum...");
     let checksum = calculate_file_checksum(file_path)
         .await
         .context("Failed to calculate file checksum")?;
@@ -512,7 +512,7 @@ pub async fn prepare_folder_for_send(folder_path: &Path) -> Result<Option<Prepar
         anyhow::bail!("Invalid folder name: empty");
     }
 
-    ui::sink().info(&format!("📁 Creating tar archive of: {}", folder_name));
+    ui::info(&format!("📁 Creating tar archive of: {}", folder_name));
     print_tar_creation_info();
 
     // Create tar archive
@@ -520,7 +520,7 @@ pub async fn prepare_folder_for_send(folder_path: &Path) -> Result<Option<Prepar
     let filename = tar_archive.filename;
     let file_size = tar_archive.file_size;
 
-    ui::sink().info(&format!(
+    ui::info(&format!(
         "📦 Archive created: {} ({})",
         filename,
         format_bytes(file_size)
@@ -528,7 +528,7 @@ pub async fn prepare_folder_for_send(folder_path: &Path) -> Result<Option<Prepar
 
     // Confirm if archive is large (folders are NOT resumable)
     if !confirm_large_folder_transfer(file_size, &filename).await? {
-        ui::sink().info("Transfer cancelled.");
+        ui::info("Transfer cancelled.");
         return Ok(None);
     }
 
@@ -801,7 +801,7 @@ pub fn find_available_filename(path: &Path) -> PathBuf {
 /// Prompt user for choice when file already exists.
 /// Returns the user's choice (overwrite, rename, or cancel).
 pub fn prompt_file_exists(path: &Path) -> Result<FileExistsChoice> {
-    ui::sink().prompt_file_exists(path)
+    ui::prompt_file_exists(path)
 }
 
 // ============================================================================
@@ -835,7 +835,7 @@ pub async fn handle_receiver_response<R: AsyncReadExt + Unpin>(
         ControlSignal::Proceed => Ok(ResumeResponse::Fresh),
         ControlSignal::Resume(offset) => {
             let starting_chunk = offset / CHUNK_SIZE as u64 + 1;
-            ui::sink().status(&format!(
+            ui::status(&format!(
                 "   Resuming from byte offset {} (chunk {})",
                 offset, starting_chunk
             ));
@@ -877,17 +877,16 @@ pub async fn send_file_data<R: AsyncReadExt + Unpin, W: AsyncWriteExt + Unpin>(
         if progress_interval > 0
             && (chunk_num.is_multiple_of(progress_interval) || bytes_sent == file_size)
         {
-            ui::sink().progress(Progress {
-                dir: Direction::Send,
-                bytes: bytes_sent,
-                total: file_size,
-                chunk: Some((chunk_num - 1, total_chunks)),
-            });
+            ui::progress(
+                bytes_sent,
+                file_size,
+                Some((chunk_num - 1, total_chunks)),
+            );
         }
     }
 
     if progress_interval > 0 {
-        ui::sink().progress_end(); // New line after progress
+        ui::progress_end(); // New line after progress
     }
 
     Ok(())
@@ -952,7 +951,7 @@ pub fn prepare_file_receiver(
             // Valid temp file found, resume transfer
             let bytes_received = resume_check.metadata.bytes_received;
             let data_offset = resume_check.data_offset;
-            ui::sink().status(&format!(
+            ui::status(&format!(
                 "   Found partial download: {} of {} received",
                 format_bytes(bytes_received),
                 format_bytes(header.file_size)
@@ -1044,17 +1043,12 @@ pub async fn receive_file_data<R: AsyncReadExt + Unpin>(
         if progress_interval > 0
             && (chunk_num.is_multiple_of(progress_interval) || receiver.bytes_received == file_size)
         {
-            ui::sink().progress(Progress {
-                dir: Direction::Receive,
-                bytes: receiver.bytes_received,
-                total: file_size,
-                chunk: None,
-            });
+            ui::progress(receiver.bytes_received, file_size, None);
         }
     }
 
     if progress_interval > 0 {
-        ui::sink().progress_end(); // New line after progress
+        ui::progress_end(); // New line after progress
     }
 
     // Final metadata update. `update_resume_metadata` writes the header at offset 0
@@ -1111,23 +1105,23 @@ fn spawn_cleanup_handler(path: PathBuf, action: CleanupAction) -> CleanupHandler
                 CleanupAction::RemoveFile => {
                     if let Some(path) = cleanup_clone.lock().await.take() {
                         let _ = tokio::fs::remove_file(&path).await;
-                        ui::sink().status("\nInterrupted. Cleaned up temp file.");
+                        ui::status("\nInterrupted. Cleaned up temp file.");
                     }
                 }
                 CleanupAction::RemoveDir => {
                     if let Some(path) = cleanup_clone.lock().await.take() {
                         let _ = tokio::fs::remove_dir_all(&path).await;
-                        ui::sink().status("\nInterrupted. Cleaned up extraction directory.");
+                        ui::status("\nInterrupted. Cleaned up extraction directory.");
                     }
                 }
                 CleanupAction::ResumableFile { is_resumable } => {
                     if !is_resumable {
                         if let Some(path) = cleanup_clone.lock().await.take() {
                             let _ = tokio::fs::remove_file(&path).await;
-                            ui::sink().status("\nInterrupted. Cleaned up temp file.");
+                            ui::status("\nInterrupted. Cleaned up temp file.");
                         }
                     } else {
-                        ui::sink().status("\nInterrupted. Partial download saved for resume.");
+                        ui::status("\nInterrupted. Partial download saved for resume.");
                     }
                 }
             }
@@ -1255,19 +1249,19 @@ where
         .context("Failed to send header")?;
 
     // 2. Wait for receiver response
-    ui::sink().status("Waiting for receiver to confirm...");
+    ui::status("Waiting for receiver to confirm...");
     let start_offset = match handle_receiver_response(stream, key).await? {
         ResumeResponse::Fresh => {
-            ui::sink().status("Receiver ready, starting transfer...");
+            ui::status("Receiver ready, starting transfer...");
             0
         }
         ResumeResponse::Resume { offset, .. } => {
-            ui::sink().status(&format_resume_progress(offset, header.file_size));
+            ui::status(&format_resume_progress(offset, header.file_size));
             file.seek(SeekFrom::Start(offset)).await?;
             offset
         }
         ResumeResponse::Aborted => {
-            ui::sink().status("Receiver declined transfer");
+            ui::status("Receiver declined transfer");
             return Ok(TransferResult::Aborted);
         }
     };
@@ -1278,10 +1272,10 @@ where
     // 4. Flush stream (important for TCP-based transports)
     stream.flush().await.context("Failed to flush stream")?;
 
-    ui::sink().status("\nTransfer complete!");
+    ui::status("\nTransfer complete!");
 
     // 5. Wait for ACK (with optional timeout)
-    ui::sink().status("Waiting for receiver to confirm...");
+    ui::status("Waiting for receiver to confirm...");
 
     let ack_result = match ack_timeout {
         Some(timeout) => {
@@ -1289,7 +1283,7 @@ where
                 Ok(result) => result,
                 Err(_) => {
                     // Timeout - consider transfer successful (data was sent)
-                    ui::sink().status("Connection closed (transfer completed)");
+                    ui::status("Connection closed (transfer completed)");
                     return Ok(TransferResult::Success);
                 }
             }
@@ -1299,14 +1293,14 @@ where
 
     match ack_result {
         Ok(ControlSignal::Ack) => {
-            ui::sink().status("Receiver confirmed!");
+            ui::status("Receiver confirmed!");
             Ok(TransferResult::Success)
         }
         Ok(other) => anyhow::bail!("Expected ACK, got {:?}", other),
         Err(e) => {
             // For unreliable transports, connection errors after data sent are acceptable
             if ack_timeout.is_some() {
-                ui::sink().status("Connection closed (transfer completed)");
+                ui::status("Connection closed (transfer completed)");
                 Ok(TransferResult::Success)
             } else {
                 Err(e).context("Failed to receive ACK")
@@ -1357,7 +1351,7 @@ where
         .await
         .context("Failed to read header")?;
 
-    ui::sink().status(&format!(
+    ui::status(&format!(
         "Receiving: {} ({})",
         header.filename,
         format_bytes(header.file_size)
@@ -1419,7 +1413,7 @@ where
             }
             FileExistsChoice::Rename => {
                 let new_path = find_available_filename(&output_path);
-                ui::sink().status(&format!("Will save as: {}", new_path.display()));
+                ui::status(&format!("Will save as: {}", new_path.display()));
                 new_path
             }
             FileExistsChoice::Cancel => {
@@ -1448,13 +1442,13 @@ where
             send_proceed(stream, key)
                 .await
                 .context("Failed to send proceed signal")?;
-            ui::sink().status("Ready to receive data...");
+            ui::status("Ready to receive data...");
         }
         ControlSignal::Resume(offset) => {
             send_resume(stream, key, *offset)
                 .await
                 .context("Failed to send resume signal")?;
-            ui::sink().status(&format_resume_progress(*offset, header.file_size));
+            ui::status(&format_resume_progress(*offset, header.file_size));
         }
         other => anyhow::bail!(
             "Unexpected control signal from prepare_file_receiver: {:?}",
@@ -1477,8 +1471,8 @@ where
     cleanup_handler.cleanup_path.lock().await.take();
     finalize_file_receiver(receiver)?;
 
-    ui::sink().status("\nFile received successfully!");
-    ui::sink().status(&format!("Saved to: {}", final_output_path.display()));
+    ui::status("\nFile received successfully!");
+    ui::status(&format!("Saved to: {}", final_output_path.display()));
 
     // Send ACK
     send_ack(stream, key)
@@ -1499,7 +1493,7 @@ async fn receive_folder_transfer_impl<S>(
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
 {
-    ui::sink().status(&format!(
+    ui::status(&format!(
         "Receiving folder archive: {} ({})",
         header.filename,
         format_bytes(header.file_size)
@@ -1509,7 +1503,7 @@ where
     send_proceed(&mut stream, key)
         .await
         .context("Failed to send proceed signal")?;
-    ui::sink().status("Ready to receive data...");
+    ui::status("Ready to receive data...");
 
     // Determine extraction directory
     let extract_dir = get_extraction_dir(Some(output_dir.to_path_buf()));
@@ -1518,7 +1512,7 @@ where
     // Set up cleanup handler
     let cleanup_handler = setup_dir_cleanup_handler(extract_dir.clone());
 
-    ui::sink().status(&format!("Extracting to: {}", extract_dir.display()));
+    ui::status(&format!("Extracting to: {}", extract_dir.display()));
     print_tar_extraction_info();
 
     // Get runtime handle for blocking in StreamingReader
@@ -1548,8 +1542,8 @@ where
     // Clear cleanup
     cleanup_handler.cleanup_path.lock().await.take();
 
-    ui::sink().status("\nFolder received successfully!");
-    ui::sink().status(&format!("Extracted to: {}", extract_dir.display()));
+    ui::status("\nFolder received successfully!");
+    ui::status(&format!("Extracted to: {}", extract_dir.display()));
 
     // Get stream back and send ACK
     // Validate that all expected bytes were received before sending ACK

@@ -24,11 +24,6 @@ mod cli;
 #[command(about = "Secure peer-to-peer file transfer")]
 #[command(version)]
 struct Cli {
-    /// Disable the interactive terminal UI and use plain line output.
-    /// The TUI is also auto-disabled when stdout/stderr is not a terminal.
-    #[arg(long, global = true)]
-    no_tui: bool,
-
     #[command(subcommand)]
     command: Commands,
 }
@@ -143,70 +138,20 @@ async fn async_main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let cli = Cli::parse();
-
-    // Start the inline TUI (if applicable) and install its sink. Honors
-    // --no-tui and the terminal auto-detect; returns None in plain mode (or if
-    // the inline viewport can't be initialized), leaving the plain sink in place.
-    let tui_handle = beam_rs::tui::decide_and_install(cli.no_tui);
-
-    // Only discard tracing once the TUI is actually active — otherwise a failed
-    // TUI init would silently drop logs with no viewport to show status. Set up
-    // tracing after installing the sink so the flag reflects the real state.
-    init_tracing(tui_handle.is_some());
-
-    let result = run(cli.command).await;
-
-    // Always restore the terminal before propagating the result/error.
-    if let Some(handle) = tui_handle {
-        handle.finish();
-    }
-
-    result
+    init_tracing();
+    run(cli.command).await
 }
 
-/// Set up the tracing subscriber. When `discard` is true (TUI mode) all log
-/// output is sent to a sink so it does not interfere with the inline viewport.
-fn init_tracing(discard: bool) {
-    // Set up tracing subscriber with filters for noisy iroh internals
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("info")
-            // Suppress noisy iroh internal logs
-            .add_directive("iroh=warn".parse().unwrap())
-            .add_directive("iroh_net=warn".parse().unwrap())
-            .add_directive("iroh_relay=warn".parse().unwrap())
-            .add_directive("iroh_quinn=warn".parse().unwrap())
-            .add_directive("netwatch=warn".parse().unwrap())
-            .add_directive("portmapper=warn".parse().unwrap())
-            .add_directive("swarm_discovery=warn".parse().unwrap())
+/// Set up quiet-by-default diagnostic logging. User-facing transfer status is
+/// printed separately by `ui`, while `RUST_LOG` can opt into detailed logs.
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error"));
 
-            .add_directive("quinn=warn".parse().unwrap())
-            .add_directive("quinn_proto=warn".parse().unwrap())
-
-            // Suppress noisy arti/tor internal logs (Tor transport)
-            .add_directive("arti=warn".parse().unwrap())
-            .add_directive("arti_client=warn".parse().unwrap())
-            .add_directive("tor_proto=warn".parse().unwrap())
-            .add_directive("tor_chanmgr=warn".parse().unwrap())
-            .add_directive("tor_circmgr=off".parse().unwrap())
-            .add_directive("tor_guardmgr=warn".parse().unwrap())
-            .add_directive("tor_netdir=warn".parse().unwrap())
-            .add_directive("tor_dirmgr=warn".parse().unwrap())
-            .add_directive("tor_hsservice=warn".parse().unwrap())
-            .add_directive("tor_hsclient=warn".parse().unwrap())
-            .add_directive("tor_rtcompat=warn".parse().unwrap())
-            .add_directive("tor_persist=off".parse().unwrap())
-    });
-
-    let builder = tracing_subscriber::fmt()
+    tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
-        .without_time();
-
-    if discard {
-        builder.with_writer(std::io::sink).init();
-    } else {
-        builder.init();
-    }
+        .without_time()
+        .init();
 }
 
 /// Prompt for a beam code or PIN, re-prompting on empty input.
@@ -221,13 +166,12 @@ fn prompt_code_or_pin() -> Result<String> {
 
     let mut initial = String::new();
     loop {
-        let input = ui::sink()
-            .prompt_line("Enter beam code or PIN: ", &initial)?
+        let input = ui::prompt_line("Enter beam code or PIN: ", &initial)?
             .trim()
             .to_string();
 
         if input.is_empty() {
-            ui::sink().info("Input cannot be empty.");
+            ui::info("Input cannot be empty.");
             initial = String::new();
             continue;
         }
@@ -238,7 +182,7 @@ fn prompt_code_or_pin() -> Result<String> {
         let looks_like_pin = input.len() == PIN_LENGTH
             && input.bytes().all(|b| PIN_CHARSET.contains(&b));
         if looks_like_pin && !validate_pin(&input) {
-            ui::sink().info("That looks like a PIN but the checksum is invalid — please re-check it.");
+            ui::info("That looks like a PIN but the checksum is invalid — please re-check it.");
             initial = input;
             continue;
         }
@@ -301,7 +245,7 @@ async fn run(command: Commands) -> Result<()> {
             let input = prompt_code_or_pin()?;
 
             let (code, pin_info) = if crate::auth::pin::validate_pin(&input) {
-                ui::sink().status("Searching for beam token via Nostr...");
+                ui::status("Searching for beam token via Nostr...");
 
                 // Fetch encrypted token from Nostr using the PIN.
                 let result = tokio::time::timeout(
@@ -314,7 +258,7 @@ async fn run(command: Commands) -> Result<()> {
                         "Timeout: Failed to retrieve beam code from Nostr after 30 seconds"
                     )
                 })??;
-                ui::sink().status("Token found and decrypted!");
+                ui::status("Token found and decrypted!");
                 (result.code, Some(PinInfo { pin: input, transfer_id: result.transfer_id }))
             } else {
                 (input, None)
