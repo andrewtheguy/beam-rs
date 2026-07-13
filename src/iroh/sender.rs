@@ -173,7 +173,10 @@ async fn transfer_data_internal(
             }
             print_receiver_command("beam-rs receive");
             ui::show_pin(&crate::auth::pin::format_pin(&pin));
-            ui::info("This PIN is valid for 60 seconds and will not refresh.\n");
+            ui::info(&format!(
+                "This PIN is valid for {} seconds and will not refresh.\n",
+                crate::auth::pin::PIN_LIFETIME_SECS
+            ));
             pin_deadline = Some(
                 tokio::time::Instant::now()
                     + Duration::from_secs(crate::auth::pin::PIN_LIFETIME_SECS),

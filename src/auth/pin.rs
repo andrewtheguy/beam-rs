@@ -12,7 +12,7 @@ use rand::Rng;
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 pub const PIN_LEN: usize = 10;
 const PIN_DATA_LEN: usize = PIN_LEN - 1;
-pub const PIN_LIFETIME_SECS: u64 = 60;
+pub const PIN_LIFETIME_SECS: u64 = 120;
 
 const ARGON2_MEM_KIB: u32 = 64 * 1024;
 const ARGON2_TIME: u32 = 3;

@@ -1,4 +1,4 @@
-//! Nostr and LAN rendezvous for a single, 60-second PIN session.
+//! Nostr and LAN rendezvous for a single, 120-second PIN session.
 
 use std::collections::HashMap;
 use std::time::Duration;

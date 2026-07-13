@@ -7,7 +7,7 @@ This document provides a detailed walkthrough of the beam-rs implementation.
 beam-rs supports the following transfer modes:
 
 1. **Default Iroh mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`. Requires internet access.
-2. **PIN mode** - publishes an encrypted ephemeral node-ID record over Nostr and mDNS, then authenticates and derives the content key with SPAKE2. A PIN is valid once for 60 seconds.
+2. **PIN mode** - publishes an encrypted ephemeral node-ID record over Nostr and mDNS, then authenticates and derives the content key with SPAKE2. A PIN is valid once for 120 seconds.
 3. **Serverless Mode** - uses iroh with relays and internet discovery disabled via `beam-rs send --serverless`. A pasted serverless payload carries the node ID, a 256-bit session secret, and discovered direct addresses. Adding `--pin` replaces the pasted payload with LAN-only mDNS PIN discovery.
 4. **Tor Mode** - Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`. Requires internet access.
 
@@ -75,7 +75,7 @@ With `--serverless --pin`, no long payload is copied. The sender advertises the
 same encrypted PIN rendezvous record used by normal PIN mode, but only through
 mDNS. Its PIN starts with `B`, so the receiver selects LAN-only discovery and a
 relayless, mDNS-only endpoint before doing any lookup. The one displayed PIN
-expires after 60 seconds, at which point the sender exits rather than rotating
+expires after 120 seconds, at which point the sender exits rather than rotating
 it.
 
 ```mermaid
@@ -188,10 +188,10 @@ selects LAN-only PIN discovery. The sender encodes that choice in the PIN so the
 receiver needs no mode flag.
 
 - **Format**: Ten uppercase characters grouped `XXXXX-XXXXX`. The first byte is `A` for normal PIN mode or `B` for serverless PIN mode, followed by eight random Crockford-base32 characters (~40 bits) and a position-weighted check character. Input is case-insensitive and maps common lookalikes.
-- **Record key**: Argon2id derives a Nostr keypair from the canonical PIN and current 60-second wall-clock bucket using 64 MiB, three passes, and one lane. Receivers derive candidates for the current, previous, and next buckets.
+- **Record key**: Argon2id derives a Nostr keypair from the canonical PIN and current 120-second wall-clock bucket using 64 MiB, three passes, and one lane. Receivers derive candidates for the current, previous, and next buckets.
 - **Record content**: NIP-44 self-encryption protects a JSON payload containing only the sender's ephemeral iroh node ID. The derived public key is the lookup key on both Nostr and mDNS. No transfer key or reusable credential is published.
 - **Channels**: An `A` PIN races a stored Nostr record and a `_beam-rs-pin._udp.local.` mDNS record, then creates a relay-capable receiver endpoint. A `B` PIN performs only the mDNS query and creates an endpoint with iroh relays and internet DNS/pkarr disabled.
-- **Lifetime**: The Nostr event expires after 60 seconds and the mDNS advertisement is withdrawn when the process exits. The sender displays one PIN and exits after 60 seconds if no receiver starts connecting.
+- **Lifetime**: The Nostr event expires after 120 seconds and the mDNS advertisement is withdrawn when the process exits. The sender displays one PIN and exits after 120 seconds if no receiver starts connecting.
 - **Authentication and key derivation**: The PIN is the SPAKE2 password. The sender's node ID is used as the session context and validated during the handshake. The SPAKE2 result becomes the AES-256-GCM content key.
 - **Security**: SPAKE2 prevents a passive transcript from becoming an offline PIN verifier. The public PIN-derived rendezvous record can still be tested offline, so its Argon2id cost and short lifetime are important mitigations.
 
@@ -212,7 +212,7 @@ All beam codes include a creation timestamp and are validated against a TTL to p
 
 **Validation Points:**
 1. **Beam Codes** (default iroh and Tor): Validated in `parse_code()` before connection.
-2. **PIN Mode**: The rendezvous and listening window is 60 seconds; there is no embedded beam token.
+2. **PIN Mode**: The rendezvous and listening window is 120 seconds; there is no embedded beam token.
 3. **Serverless Codes**: Valid only while their ephemeral sender process remains alive. They use a separate strict versioned payload rather than the beam-token format.
 
 **Error Messages:**

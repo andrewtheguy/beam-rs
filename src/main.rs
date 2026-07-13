@@ -41,7 +41,7 @@ enum Commands {
         #[arg(long)]
         folder: bool,
 
-        /// Use a single 60-second PIN advertised over Nostr and the LAN
+        /// Use a single 120-second PIN advertised over Nostr and the LAN
         #[arg(long)]
         pin: bool,
 

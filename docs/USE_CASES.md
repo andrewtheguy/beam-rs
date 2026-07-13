@@ -26,7 +26,7 @@ beam-rs receive
 
 The `B` at the start of the PIN makes the receiver disable Nostr, relays, and
 internet-backed DNS automatically. The node-ID record travels only over mDNS.
-The PIN lasts 60 seconds and does not refresh.
+The PIN lasts 120 seconds and does not refresh.
 
 ---
 
@@ -63,7 +63,7 @@ The PIN lasts 60 seconds and does not refresh.
 - **Experience**:
   1. Sender sees: `PIN: AK7P2-9QXMT` (example).
   2. Receiver enters that PIN. It is auto-detected and resolved over Nostr or mDNS.
-  3. The PIN is available for one 60-second window; the sender exits instead of refreshing it.
+  3. The PIN is available for one 120-second window; the sender exits instead of refreshing it.
 
 **Solution B**: **Serverless Mode** (No third-party server)
 - **Why**: Contacts no relay, Nostr, or internet discovery service. The copied code embeds direct address hints and a full session secret. If copying is impossible, combine `--serverless --pin`; its leading `B` tells a normal receiver to remain LAN-only.

@@ -102,7 +102,7 @@ The sender advertises only its encrypted ephemeral node ID, never a beam code or
 content key. An `A` at the start of the ten-character PIN tells the receiver to
 race Nostr and mDNS lookups, so same-LAN pairing can still work without
 internet. The displayed `AXXXX-XXXXX` PIN is valid for one
-60-second window. If no receiver starts connecting, the sender exits instead of
+120-second window. If no receiver starts connecting, the sender exits instead of
 refreshing it.
 
 ### 3. Serverless Mode - `send --serverless`
@@ -136,7 +136,7 @@ beam-rs receive
 `--serverless --pin` publishes no payload or secret: mDNS carries an encrypted
 node-ID rendezvous record, and SPAKE2 authenticates the PIN in-band. The sender
 uses a `BXXXX-XXXXX` PIN so the receiver automatically disables Nostr, iroh
-relays, and internet-backed DNS. It uses one PIN for 60 seconds and exits if
+relays, and internet-backed DNS. It uses one PIN for 120 seconds and exits if
 nobody connects; it does not refresh.
 `--serverless` cannot be combined with `--relay-url` because relays are disabled.
 
