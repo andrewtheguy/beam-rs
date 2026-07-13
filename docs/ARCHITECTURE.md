@@ -4,11 +4,12 @@
 
 This document provides a detailed walkthrough of the beam-rs implementation.
 
-beam-rs supports the following transfer modes (all beam code based):
+beam-rs supports the following transfer modes:
 
 1. **Default Iroh mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`. Requires internet access.
-2. **Serverless Mode** - transfers using the iroh QUIC/TLS stack with relays disabled (no third-party server) via `beam-rs send --serverless`. The sender embeds the direct addresses discovered before the code is printed (LAN and any public/port-mapped addresses) in the beam code so the receiver connects directly, with mDNS as a fallback. Uses the same beam code format as iroh mode; the only mode that works without internet access.
-3. **Tor Mode** - Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`. Requires internet access.
+2. **PIN mode** - publishes an encrypted ephemeral node-ID record over Nostr and mDNS, then authenticates and derives the content key with SPAKE2. A PIN is valid once for 120 seconds.
+3. **Serverless Mode** - uses iroh with relays and internet discovery disabled via `beam-rs send --serverless`. A pasted serverless payload carries the node ID, a 256-bit session secret, and discovered direct addresses. Adding `--pin` replaces the pasted payload with LAN-only mDNS PIN discovery.
+4. **Tor Mode** - Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`. Requires internet access.
 
 ## Transfer Flows
 
@@ -61,20 +62,21 @@ sequenceDiagram
 
 #### Serverless Mode (iroh with relays disabled)
 
-Serverless mode is for transfers without any third-party server (no relay, no
-Nostr), and is primarily intended for the same LAN. It is the **same** iroh
-transport and beam code as the default mode, with one difference: relays are
-disabled (`RelayMode::Disabled`). The sender waits up to 10 seconds for direct
-address discovery, then prints a beam code containing the endpoint ID plus the
-direct addresses discovered so far (LAN interfaces and any public/port-mapped
-addresses) and no relay URL. If no direct address is available yet, the sender
-warns and still prints the code; the receiver may still connect after mDNS
-propagates. The receiver auto-detects this mode from the missing relay URL and
-connects directly to the embedded addresses, falling back to mDNS. It is not
-strictly local-only — enforcing that would be an unnecessary burden — so a WAN
-connection may succeed when a public/port-mapped address is reachable, though
-NAT and firewalls commonly prevent it. (In serverless mode DNS is not used at
-all — mDNS handles address lookup — so relay hostname resolution never applies.)
+Serverless mode is for transfers without any third-party server. Both endpoints
+use `RelayMode::Disabled`, omit n0 DNS/pkarr publishing and lookup, and retain
+only iroh's mDNS address lookup. Before printing the code, the sender waits for
+a direct address. The serverless beam payload contains a schema version, endpoint
+ID, fresh 256-bit session secret, and every discovered direct socket address.
+The receiver constructs its target from those embedded addresses, while mDNS
+continues as a fallback. After connecting, both sides run SPAKE2 with the
+payload's secret; the derived key encrypts the application protocol.
+
+With `--serverless --pin`, no long payload is copied. The sender advertises the
+same encrypted PIN rendezvous record used by normal PIN mode, but only through
+mDNS. Its PIN starts with `B`, so the receiver selects LAN-only discovery and a
+relayless, mDNS-only endpoint before doing any lookup. The one displayed PIN
+expires after 120 seconds, at which point the sender exits rather than rotating
+it.
 
 ```mermaid
 sequenceDiagram
@@ -84,15 +86,16 @@ sequenceDiagram
     Sender->>Sender: 1. Bind iroh endpoint (RelayMode::Disabled)
     Sender->>Sender: 2. Wait briefly for direct address discovery
     Sender->>Sender: 3. Print beam code
-    Note over Sender: Beam code has endpoint id + discovered direct addresses (LAN/public), no relay URL
+    Note over Sender: Code has endpoint ID + 256-bit secret + discovered direct addresses
 
     Note over Sender: User shares beam code out-of-band
 
-    Receiver->>Receiver: 4. Parse code, detect no relay -> serverless
+    Receiver->>Receiver: 4. Parse serverless payload
     Receiver->>Sender: 5. Connect directly to embedded IPs (mDNS fallback) over QUIC (ALPN beam-transfer/1)
+    Sender->>Receiver: 6. SPAKE2 using the copied session secret
 
     Note over Sender,Receiver: From here identical to iroh mode
-    Sender->>Receiver: 6. Encrypted header / chunks / ACK (AES-256-GCM)
+    Sender->>Receiver: 7. Encrypted header / chunks / ACK (AES-256-GCM)
 ```
 
 ### 2. Tor Transfers
@@ -138,24 +141,27 @@ sequenceDiagram
 ## Connection Types/Modes
 
 ### Default Iroh mode (`beam-rs send`) - Recommended
+
 - **Transport**: QUIC / TLS 1.3
 - **Discovery**: Selected relay URL embedded in the beam code, optional custom relay list from `--relay-url`, plus mDNS for local network.
 - **Relay**: iroh relays (DERP) - automatically used if direct P2P connection fails.
 - **Failover**: Uses multiple relays for redundancy; monitors latency to select the best path.
 - **Connection**: "Hole punching" attempts to establish a direct UDP connection; falls back to relay if NATs are strict.
 - **Protocol**: ALPN `beam-transfer/1`.
-- **PIN Support**: Yes (`beam-rs send --pin`; the receiver runs `beam-rs receive` and enters the PIN at the prompt — it is auto-detected vs. a full beam code)
+- **PIN Support**: Yes. The default PIN flow races Nostr and LAN rendezvous and tolerates an unavailable relay so same-LAN peers can pair offline.
 - **Encryption**: Always AES-256-GCM encrypted at the application layer, plus QUIC/TLS encryption.
 
 ### Serverless Mode (`beam-rs send --serverless`)
+
 - **Transport**: QUIC / TLS 1.3 (same as iroh mode)
-- **Discovery**: Direct addresses embedded in the beam code (the IPs iroh discovered before the code was printed — LAN and any public/port-mapped addresses), with mDNS address lookup as a fallback; relays disabled (`RelayMode::Disabled`)
-- **Key Exchange**: Beam code (carries the AES key and an endpoint address with embedded IPs and no relay URL)
-- **PIN Support**: No; PIN exchange uses Nostr, a third-party server
-- **Encryption**: Always AES-256-GCM at the application layer, plus QUIC/TLS encryption
-- **Reachability**: Primarily intended for the same LAN. The sender waits briefly for direct address discovery before printing the code, but it does not wait forever because there is no relay to wait on. Not strictly local-only — a WAN connection may succeed when a public/port-mapped address is reachable, but NAT/firewalls commonly prevent it. Incompatible with `--pin` and `--relay-url`.
+- **Discovery**: Direct addresses embedded in the serverless payload, with mDNS as a fallback; relays and n0 DNS/pkarr are disabled.
+- **Key Exchange**: The pasted payload carries a fresh 256-bit session secret; SPAKE2 derives the AES key in-band.
+- **PIN Support**: Yes via `send --serverless --pin` and a normal `receive` command. The leading `B` selects LAN-only receiver behavior; the encrypted node-ID record is advertised over mDNS only and no long code is copied.
+- **Encryption**: AES-256-GCM with a SPAKE2-derived key, plus QUIC/TLS encryption.
+- **Reachability**: Primarily intended for the same LAN. Embedded public/port-mapped addresses can permit a direct WAN path, but NAT/firewalls commonly prevent it. Incompatible with `--relay-url`.
 
 ### Tor Mode (`beam-rs send --tor`)
+
 - **Transport**: Tor Onion Services
 - **Discovery**: Onion Address
 - **PIN Support**: No
@@ -164,6 +170,7 @@ sequenceDiagram
 ## Security Model
 
 ### Default Iroh mode Encryption (Dual Layer)
+
 Default Iroh mode uses two encryption layers for defense in depth:
 
 **Transport Layer (iroh/QUIC)**:
@@ -175,20 +182,21 @@ Default Iroh mode uses two encryption layers for defense in depth:
 - 256-bit key generated per transfer, embedded in beam code
 
 ### PIN-based Key Exchange (PIN Mode)
-PIN mode is available for the default iroh transport (`beam-rs send --pin`). It
-is not available for iroh `--serverless` or Tor.
 
-PIN mode exchanges the beam code through Nostr keyed by a short PIN, then runs
-a SPAKE2 handshake over the established QUIC stream to derive the session key.
-PIN mode requires internet access for Nostr lookup.
+PIN mode is available through `beam-rs send --pin`; adding `--serverless`
+selects LAN-only PIN discovery. The sender encodes that choice in the PIN so the
+receiver needs no mode flag.
 
-- **Format**: 12 characters (11 random + 1 checksum) from an unambiguous charset; the checksum catches typos before attempting a connection.
-- **Nostr lookup**: The sender publishes an encrypted beam code as event kind `24243` with a time-bucketed PIN hint. Events expire after 2 hours; receivers query the current and previous hourly bucket.
-- **Key Derivation**: The PIN is the SPAKE2 password, with fixed `beam-rs-sender`/`beam-rs-receiver` identities; the handshake derives the session key. The transfer_id is exchanged alongside the handshake and validated separately (constant-time compare), not folded into the key.
-- **Security**: SPAKE2 prevents offline dictionary attacks, and a mismatched transfer_id is rejected before the key is used.
-- **Confidentiality**: All data (headers, chunks, and control signals) is AES-256-GCM encrypted with the SPAKE2-derived key, on top of the transport encryption.
+- **Format**: Ten uppercase characters grouped `XXXXX-XXXXX`. The first byte is `A` for normal PIN mode or `B` for serverless PIN mode, followed by eight random Crockford-base32 characters (~40 bits) and a position-weighted check character. Input is case-insensitive and maps common lookalikes.
+- **Record key**: Argon2id derives a Nostr keypair from the canonical PIN and current 120-second wall-clock bucket using 64 MiB, three passes, and one lane. Receivers derive candidates for the current, previous, and next buckets.
+- **Record content**: NIP-44 self-encryption protects a JSON payload containing only the sender's ephemeral iroh node ID. The derived public key is the lookup key on both Nostr and mDNS. No transfer key or reusable credential is published.
+- **Channels**: An `A` PIN races a stored Nostr record and a `_beam-rs-pin._udp.local.` mDNS record, then creates a relay-capable receiver endpoint. A `B` PIN performs only the mDNS query and creates an endpoint with iroh relays and internet DNS/pkarr disabled.
+- **Lifetime**: The Nostr event expires after 120 seconds and the mDNS advertisement is withdrawn when the process exits. The sender displays one PIN and exits after 120 seconds if no receiver starts connecting.
+- **Authentication and key derivation**: The PIN is the SPAKE2 password. The sender's node ID is used as the session context and validated during the handshake. The SPAKE2 result becomes the AES-256-GCM content key.
+- **Security**: SPAKE2 prevents a passive transcript from becoming an offline PIN verifier. The public PIN-derived rendezvous record can still be tested offline, so its Argon2id cost and short lifetime are important mitigations.
 
 ### Tor Mode Security
+
 - **Anonymity**: Sender/Receiver IPs hidden.
 - **Encryption**: End-to-end via Tor circuit encryption plus mandatory AES-256-GCM at application layer for all data (headers, chunks, and control signals).
 - **Timeouts**: The sender waits up to 10 minutes for a receiver to connect. The receiver retries retryable Tor connection failures up to 5 times and applies a 30-minute transfer timeout by default; set `BEAM_TRANSFER_TIMEOUT_SECS` to override it.
@@ -198,13 +206,14 @@ PIN mode requires internet access for Nostr lookup.
 All beam codes include a creation timestamp and are validated against a TTL to prevent replay attacks and stale session establishment.
 
 **Implementation:**
-- **Token Version**: v4 tokens include a `created_at` Unix timestamp
+- **Token Version**: v5 beam tokens include a `created_at` Unix timestamp
 - **TTL Duration**: 60 minutes (`SESSION_TTL_SECS = 3600`)
 - **Clock Skew**: Allows up to 60 seconds into the future to handle minor clock drift
 
 **Validation Points:**
-1. **Beam Codes** (iroh, iroh `--serverless`, Tor): Validated in `parse_code()` before connection. Serverless codes use the same v4 token format and are validated the same way.
-2. **PIN Mode**: The Nostr event can live for up to 2 hours to survive hourly hint bucket boundaries, but the decrypted beam code is still parsed through the same 60-minute TTL validation.
+1. **Beam Codes** (default iroh and Tor): Validated in `parse_code()` before connection.
+2. **PIN Mode**: The rendezvous and listening window is 120 seconds; there is no embedded beam token.
+3. **Serverless Codes**: Valid only while their ephemeral sender process remains alive. They use a separate strict versioned payload rather than the beam-token format.
 
 **Error Messages:**
 - Expired codes: "Token expired: code is X minutes old (max 60 minutes). Please request a new code from the sender."

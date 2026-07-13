@@ -1,9 +1,12 @@
-pub mod nostr_pin;
+pub mod lan;
 pub mod pin;
+pub mod pin_record;
+pub mod rendezvous;
+pub mod serverless_code;
 pub mod spake2;
 
-/// PIN and transfer ID pair for SPAKE2 handshake in PIN mode.
-pub struct PinInfo {
-    pub pin: String,
-    pub transfer_id: String,
+/// Secret and session context used by PIN and serverless pairing authentication.
+pub struct PairingAuth {
+    pub secret: String,
+    pub session_id: String,
 }

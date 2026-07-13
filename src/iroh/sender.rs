@@ -1,15 +1,18 @@
 use anyhow::{Context, Result};
 use iroh::endpoint::ConnectingError;
 use std::path::Path;
+use std::time::Duration;
 use tokio::fs::File;
 use tokio::sync::oneshot;
 
 use super::common::{
-    IrohDuplex, create_sender_endpoint, generate_code, is_connection_error_network_related,
-    watch_connection_paths,
+    EndpointReadiness, IrohDuplex, create_sender_endpoint, generate_code,
+    is_connection_error_network_related, wait_for_direct_address_hint, watch_connection_paths,
 };
 use crate::cli::instructions::print_receiver_command;
-use crate::auth::PinInfo;
+use crate::auth::PairingAuth;
+use crate::auth::pin::PinMode;
+use crate::auth::rendezvous::PinChannel;
 use crate::auth::spake2::handshake_as_responder;
 use beam_rs::core::crypto::generate_key;
 use beam_rs::ui;
@@ -17,7 +20,15 @@ use beam_rs::core::transfer::{
     FileHeader, Interrupted, TransferResult, TransferType, run_sender_transfer, send_file_with,
     send_folder_with,
 };
-use crate::signaling::nostr_protocol::generate_transfer_id;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PairingMode {
+    BeamCode,
+    Pin(PinChannel),
+    Serverless,
+}
+
+const PIN_COUNTDOWN_INTERVAL_SECS: u64 = 10;
 
 /// QUIC application close codes for connection termination.
 ///
@@ -79,63 +90,153 @@ async fn transfer_data_internal(
     checksum: u64,
     transfer_type: TransferType,
     relay_urls: Vec<String>,
-    use_pin: bool,
-    serverless: bool,
+    pairing_mode: PairingMode,
     shutdown_rx: Option<oneshot::Receiver<()>>,
 ) -> Result<()> {
     // Always generate encryption key for application-layer encryption
     let key = generate_key();
 
-    // Create iroh endpoint
-    let endpoint = create_sender_endpoint(relay_urls.clone(), serverless).await?;
+    let readiness = match pairing_mode {
+        PairingMode::BeamCode => EndpointReadiness::RelayOnline,
+        PairingMode::Pin(PinChannel::NostrAndLan) => EndpointReadiness::RelayPreferred,
+        PairingMode::Pin(PinChannel::LanOnly) | PairingMode::Serverless => {
+            EndpointReadiness::LanDirect
+        }
+    };
+    let endpoint = create_sender_endpoint(relay_urls.clone(), readiness).await?;
 
-    // Get our address
-    let addr = endpoint.addr();
+    let mut pin_advert = None;
+    let mut nostr_publisher = None;
+    let mut pin_deadline = None;
 
-    // Generate beam code. The configured custom relays are embedded so the
-    // receiver adopts them without needing its own --relay-url flag.
-    let code = generate_code(&addr, &key, &relay_urls, serverless)?;
-
-    // `receive` takes no code/PIN argument — it prompts for the input and
-    // auto-detects whether it is a full beam code or a PIN.
-    print_receiver_command("beam-rs receive");
-
-    ui::show_code(&code);
-
-    let pin_info = if use_pin {
-        // Generate ephemeral keys for PIN exchange
-        let keys = nostr_sdk::Keys::generate();
-        // Generate unique transfer ID to avoid collisions with concurrent transfers
-        let transfer_id = generate_transfer_id();
-        let pin = crate::auth::nostr_pin::publish_beam_code_via_pin(
-            &keys,
-            &code,
-            &transfer_id,
-        )
-        .await?;
-
-        ui::show_pin(&pin);
-        ui::info("Then enter the PIN above when prompted.\n");
-        Some(PinInfo { pin, transfer_id })
-    } else {
-        ui::info("Then enter the code above when prompted.\n");
-        None
+    let pairing_auth = match pairing_mode {
+        PairingMode::BeamCode => {
+            let code = generate_code(&endpoint.addr(), &key, &relay_urls)?;
+            print_receiver_command("beam-rs receive");
+            ui::show_code(&code);
+            ui::info("Then enter the code above when prompted.\n");
+            None
+        }
+        PairingMode::Serverless => {
+            wait_for_direct_address_hint(&endpoint).await;
+            let addr = endpoint.addr();
+            let secret_bytes = generate_key();
+            let code = crate::auth::serverless_code::encode(&addr, &secret_bytes)?;
+            let secret = base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                secret_bytes,
+            );
+            print_receiver_command("beam-rs receive");
+            ui::show_code(&code);
+            ui::info("Then paste the beam code when prompted.\n");
+            Some(PairingAuth {
+                secret,
+                session_id: addr.id.to_string(),
+            })
+        }
+        PairingMode::Pin(channel) => {
+            let pin_mode = match channel {
+                PinChannel::NostrAndLan => PinMode::Normal,
+                PinChannel::LanOnly => PinMode::Serverless,
+            };
+            let pin = crate::auth::pin::generate_pin(pin_mode);
+            let bucket = crate::auth::pin::current_bucket();
+            let keys = tokio::task::spawn_blocking({
+                let pin = pin.clone();
+                move || crate::auth::pin_record::pin_keys(&pin, bucket)
+            })
+            .await
+            .context("PIN key-derivation task failed")??;
+            let addr = endpoint.addr();
+            if channel.lan() {
+                let direct_addrs: Vec<_> = addr.ip_addrs().copied().collect();
+                match crate::auth::lan::advertise_pin_record(&keys, &addr.id, direct_addrs) {
+                    Ok(advert) => pin_advert = Some(advert),
+                    Err(error) if channel == PinChannel::LanOnly => return Err(error),
+                    Err(error) => {
+                        log::warn!("Failed to advertise PIN on the local network: {error:#}")
+                    }
+                }
+            }
+            let expires_at_unix = crate::auth::rendezvous::expires_at_unix();
+            if channel.nostr() {
+                let node_id = addr.id;
+                nostr_publisher = Some(tokio::spawn(async move {
+                    if let Err(error) = crate::auth::rendezvous::publish_nostr_record(
+                        &keys,
+                        &node_id,
+                        expires_at_unix,
+                    )
+                    .await
+                    {
+                        log::warn!("Failed to publish PIN to Nostr: {error:#}");
+                    }
+                }));
+            }
+            print_receiver_command("beam-rs receive");
+            ui::show_pin(&crate::auth::pin::format_pin(&pin));
+            ui::info(&format!(
+                "This PIN is valid for {} seconds and will not refresh.\n",
+                crate::auth::pin::PIN_LIFETIME_SECS
+            ));
+            pin_deadline = Some(
+                tokio::time::Instant::now()
+                    + Duration::from_secs(crate::auth::pin::PIN_LIFETIME_SECS),
+            );
+            Some(PairingAuth {
+                secret: pin,
+                session_id: addr.id.to_string(),
+            })
+        }
     };
 
     ui::status("Waiting for receiver to connect...");
 
-    // Wait for connection
-    let conn = endpoint
-        .accept()
-        .await
-        .ok_or_else(|| {
+    let incoming = if let Some(deadline) = pin_deadline {
+        let countdown_task = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(PIN_COUNTDOWN_INTERVAL_SECS));
+            interval.tick().await;
+            let mut seconds_remaining = crate::auth::pin::PIN_LIFETIME_SECS;
+            while seconds_remaining > PIN_COUNTDOWN_INTERVAL_SECS {
+                interval.tick().await;
+                seconds_remaining -= PIN_COUNTDOWN_INTERVAL_SECS;
+                ui::transient_status(&format!("PIN expires in {seconds_remaining} seconds..."));
+            }
+        });
+        let result = tokio::time::timeout_at(deadline, endpoint.accept()).await;
+        countdown_task.abort();
+        let _ = countdown_task.await;
+        ui::transient_status("");
+        match result {
+            Ok(Some(incoming)) => incoming,
+            Ok(None) => anyhow::bail!("Sender endpoint closed while waiting for a receiver"),
+            Err(_) => {
+                if let Some(task) = nostr_publisher.take() {
+                    task.abort();
+                }
+                drop(pin_advert.take());
+                endpoint.close().await;
+                ui::status("PIN expired; sender stopped.");
+                return Ok(());
+            }
+        }
+    } else {
+        endpoint.accept().await.ok_or_else(|| {
             anyhow::anyhow!(
                 "No incoming connection.\n\n\
                  Troubleshooting:\n  \
-                 - Ensure the receiver has the correct beam code\n  \
+                 - Ensure the receiver has the correct pairing input\n  \
                  - Check network connectivity on both ends"
             )
         })?
+    };
+    if let Some(task) = nostr_publisher.take() {
+        task.abort();
+    }
+    drop(pin_advert.take());
+
+    let conn = incoming
         .await
         .map_err(|e| {
             // Use structured error types to determine if this is a relay/network issue
@@ -149,7 +250,7 @@ async fn transfer_data_internal(
                 anyhow::anyhow!(
                     "Failed to accept connection: {}\n\n\
                      Troubleshooting:\n  \
-                     - Ensure the receiver has the correct beam code\n  \
+                     - Ensure the receiver has the correct pairing input\n  \
                      - Check network connectivity and firewall settings",
                     e
                 )
@@ -166,9 +267,8 @@ async fn transfer_data_internal(
     let (mut send_stream, mut recv_stream) =
         conn.open_bi().await.context("Failed to open stream")?;
 
-    // Perform SPAKE2 handshake if PIN mode is active (sender = responder)
-    let key = if let Some(ref pin_info) = pin_info {
-        let (pin, transfer_id) = (&pin_info.pin, &pin_info.transfer_id);
+    // PIN and serverless modes both authenticate their session secret with SPAKE2.
+    let key = if let Some(ref pairing_auth) = pairing_auth {
         ui::status("Performing SPAKE2 authentication...");
         // Write a "ready" byte to materialize the QUIC stream on the receiver side.
         // In QUIC, open_bi() allocates the stream locally but may not send a STREAM
@@ -178,7 +278,11 @@ async fn transfer_data_internal(
         let mut duplex = IrohDuplex::new(&mut send_stream, &mut recv_stream);
         let handshake_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            handshake_as_responder(&mut duplex, pin, transfer_id),
+            handshake_as_responder(
+                &mut duplex,
+                &pairing_auth.secret,
+                &pairing_auth.session_id,
+            ),
         )
         .await
         .map_err(|_| anyhow::anyhow!("SPAKE2 handshake timed out"))
@@ -265,8 +369,7 @@ async fn transfer_data_internal(
 pub async fn send_file(
     file_path: &Path,
     relay_urls: Vec<String>,
-    use_pin: bool,
-    serverless: bool,
+    pairing_mode: PairingMode,
 ) -> Result<()> {
     send_file_with(
         file_path,
@@ -278,8 +381,7 @@ pub async fn send_file(
                 checksum,
                 transfer_type,
                 relay_urls,
-                use_pin,
-                serverless,
+                pairing_mode,
                 None, // No shutdown receiver for resumable file transfers
             )
         },
@@ -296,8 +398,7 @@ pub async fn send_file(
 pub async fn send_folder(
     folder_path: &Path,
     relay_urls: Vec<String>,
-    use_pin: bool,
-    serverless: bool,
+    pairing_mode: PairingMode,
 ) -> Result<()> {
     send_folder_with(
         folder_path,
@@ -309,8 +410,7 @@ pub async fn send_folder(
                 checksum,
                 transfer_type,
                 relay_urls,
-                use_pin,
-                serverless,
+                pairing_mode,
                 None, // Shutdown handling is done by send_folder_with
             )
         },

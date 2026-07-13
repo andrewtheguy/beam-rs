@@ -4,14 +4,13 @@ use anyhow::{Context, Result};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::StreamExt;
 use iroh::{
-    dns::{DnsProtocol, DnsResolver},
     Endpoint, EndpointAddr, RelayMap, RelayUrl, TransportAddr, Watcher,
+    address_lookup::{DnsAddressLookup, PkarrPublisher},
     endpoint::{Connection, ConnectionError, PathList, RecvStream, RelayMode, SendStream, presets},
 };
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 use tokio::task::JoinHandle;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
@@ -257,12 +256,20 @@ fn print_relay_info(relay_urls: &[String]) {
 /// The endpoint is configured with ALPN for beam transfers.
 /// Multiple relay URLs provide automatic failover based on latency.
 ///
-/// When `serverless` is set, relays are disabled entirely (no third-party server
-/// is contacted): the endpoint's discovered direct addresses are embedded in the
-/// beam code and mDNS is kept as a discovery fallback.
-pub async fn create_sender_endpoint(relay_urls: Vec<String>, serverless: bool) -> Result<Endpoint> {
-    let relay_mode = if serverless {
-        eprintln!("Serverless mode (direct connection, no relay)");
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndpointReadiness {
+    RelayOnline,
+    RelayPreferred,
+    LanDirect,
+}
+
+const ENDPOINT_READY_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub async fn create_sender_endpoint(
+    relay_urls: Vec<String>,
+    readiness: EndpointReadiness,
+) -> Result<Endpoint> {
+    let relay_mode = if readiness == EndpointReadiness::LanDirect {
         RelayMode::Disabled
     } else {
         print_relay_info(&relay_urls);
@@ -277,55 +284,81 @@ pub async fn create_sender_endpoint(relay_urls: Vec<String>, serverless: bool) -
     let builder = Endpoint::builder(presets::Empty)
         .crypto_provider(crypto_provider)
         .relay_mode(relay_mode)
-        .alpns(vec![ALPN.to_vec()])
-        .address_lookup(MdnsAddressLookup::builder())
-        .dns_resolver(beam_dns_resolver());
+        .alpns(vec![ALPN.to_vec()]);
+
+    let builder = if readiness == EndpointReadiness::LanDirect {
+        builder.address_lookup(MdnsAddressLookup::builder())
+    } else {
+        builder
+            .address_lookup(PkarrPublisher::n0_dns())
+            .address_lookup(DnsAddressLookup::n0_dns())
+            .address_lookup(MdnsAddressLookup::builder())
+    };
 
     let endpoint = builder
         .bind()
         .await
         .context("Failed to create endpoint")?;
 
-    if serverless {
-        // `online()` waits for a home relay to connect, which never happens
-        // with relays disabled. Instead wait until we have at least one direct
-        // address so the printed beam code embeds a reachable address (and mDNS
-        // has an address to advertise).
-        wait_for_direct_address(&endpoint).await;
-    } else {
-        // Wait for endpoint to be online (connected to relay)
-        endpoint.online().await;
-    }
+    wait_for_endpoint_ready(&endpoint, readiness).await?;
 
     Ok(endpoint)
 }
 
 /// Wait until the endpoint has discovered at least one direct (IP) address.
 ///
-/// Used in serverless mode where there is no relay to fall back on: the printed
-/// beam code embeds the discovered addresses, so we wait for at least one. Gives
-/// up after a short timeout, in which case the receiver may simply need a moment
-/// longer for mDNS to propagate.
 async fn wait_for_direct_address(endpoint: &Endpoint) {
-    const ADDR_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
-    let wait = async {
-        let mut watcher = endpoint.watch_addr();
-        loop {
-            if watcher.get().ip_addrs().next().is_some() {
-                break;
+    let mut watcher = endpoint.watch_addr();
+    loop {
+        if watcher.get().ip_addrs().next().is_some() {
+            break;
+        }
+        if watcher.updated().await.is_err() {
+            break;
+        }
+    }
+}
+
+/// Give direct-address discovery a chance to populate a serverless pairing code.
+/// The code remains usable through mDNS if the timeout is reached without an
+/// address.
+pub async fn wait_for_direct_address_hint(endpoint: &Endpoint) {
+    if tokio::time::timeout(ENDPOINT_READY_TIMEOUT, wait_for_direct_address(endpoint))
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "Warning: no direct address was discovered within {}s; the beam code will rely on mDNS.",
+            ENDPOINT_READY_TIMEOUT.as_secs()
+        );
+    }
+}
+
+async fn wait_for_endpoint_ready(
+    endpoint: &Endpoint,
+    readiness: EndpointReadiness,
+) -> Result<()> {
+    let ready = async {
+        match readiness {
+            EndpointReadiness::RelayOnline | EndpointReadiness::RelayPreferred => {
+                endpoint.online().await
             }
-            // Returns Err once the endpoint is dropped; stop waiting then.
-            if watcher.updated().await.is_err() {
-                break;
-            }
+            EndpointReadiness::LanDirect => wait_for_direct_address(endpoint).await,
         }
     };
-    if tokio::time::timeout(ADDR_WAIT_TIMEOUT, wait).await.is_err() {
-        eprintln!(
-            "Warning: no local network address discovered within {:?}; \
-             mDNS may not be able to advertise this sender yet.",
-            ADDR_WAIT_TIMEOUT
-        );
+    match tokio::time::timeout(ENDPOINT_READY_TIMEOUT, ready).await {
+        Ok(()) => Ok(()),
+        Err(_) if readiness == EndpointReadiness::RelayPreferred => {
+            log::info!(
+                "No relay came online after {}s; continuing with LAN discovery",
+                ENDPOINT_READY_TIMEOUT.as_secs()
+            );
+            Ok(())
+        }
+        Err(_) => anyhow::bail!(
+            "Endpoint failed to become ready after {}s",
+            ENDPOINT_READY_TIMEOUT.as_secs()
+        ),
     }
 }
 
@@ -335,15 +368,11 @@ async fn wait_for_direct_address(endpoint: &Endpoint) {
 /// Does not set ALPN as the receiver specifies it when connecting.
 /// Multiple relay URLs provide automatic failover based on latency.
 ///
-/// When `serverless` is set, relays are disabled entirely (no third-party server
-/// is contacted): the sender is reached via the direct addresses embedded in the
-/// beam code, with mDNS as a fallback.
 pub async fn create_receiver_endpoint(
     relay_urls: Vec<String>,
-    serverless: bool,
+    readiness: EndpointReadiness,
 ) -> Result<Endpoint> {
-    let relay_mode = if serverless {
-        eprintln!("Serverless mode (direct connection, no relay)");
+    let relay_mode = if readiness == EndpointReadiness::LanDirect {
         RelayMode::Disabled
     } else {
         print_relay_info(&relay_urls);
@@ -357,59 +386,24 @@ pub async fn create_receiver_endpoint(
     let crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = Endpoint::builder(presets::Empty)
         .crypto_provider(crypto_provider)
-        .relay_mode(relay_mode)
-        .address_lookup(MdnsAddressLookup::builder())
-        .dns_resolver(beam_dns_resolver());
+        .relay_mode(relay_mode);
+
+    let builder = if readiness == EndpointReadiness::LanDirect {
+        builder.address_lookup(MdnsAddressLookup::builder())
+    } else {
+        builder
+            .address_lookup(PkarrPublisher::n0_dns())
+            .address_lookup(DnsAddressLookup::n0_dns())
+            .address_lookup(MdnsAddressLookup::builder())
+    };
 
     let endpoint = builder
         .bind()
         .await
         .context("Failed to create endpoint")?;
 
+    wait_for_endpoint_ready(&endpoint, readiness).await?;
     Ok(endpoint)
-}
-
-/// Build a DNS resolver, preferring the host's system configuration and
-/// falling back to public nameservers only when it cannot be read.
-///
-/// iroh's default resolver (`with_system_defaults`) reads the host resolver
-/// config during endpoint binding. When that read fails it logs a warning
-/// ("Failed to read the system's DNS config, using fallback DNS servers")
-/// before falling back internally. On macOS the read can fail to parse a
-/// scoped nameserver entry, producing that warning on every bind — and it is
-/// not specific to serverless mode.
-///
-/// To keep the system config when it is valid while avoiding the spurious
-/// warning, we probe the same `read_system_conf()` call iroh uses:
-///   - on success, defer to `with_system_defaults()` (the subsequent read
-///     inside iroh also succeeds, so no warning is emitted);
-///   - on failure, build a resolver with explicit public nameservers — the
-///     same Google servers iroh would otherwise fall back to — so iroh never
-///     reads the system config and never warns.
-///
-/// In serverless mode DNS is never used (mDNS handles address lookup); in
-/// relay mode this resolves relay hostnames and n0 discovery records. Note
-/// that `DnsResolver::builder().build()` alone yields a resolver with *no*
-/// nameservers (an empty `ResolverConfig::default()`), which is why the
-/// fallback adds servers explicitly.
-fn beam_dns_resolver() -> DnsResolver {
-    if hickory_resolver::system_conf::read_system_conf().is_ok() {
-        return DnsResolver::builder().with_system_defaults().build();
-    }
-
-    // System config could not be read/parsed: use Google public DNS, matching
-    // iroh's own fallback nameservers.
-    const NAMESERVERS: [IpAddr; 2] = [
-        IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
-        IpAddr::V4(Ipv4Addr::new(8, 8, 4, 4)),
-    ];
-    let mut builder = DnsResolver::builder();
-    for ip in NAMESERVERS {
-        let addr = SocketAddr::new(ip, 53);
-        builder = builder.with_nameserver(addr, DnsProtocol::Udp);
-        builder = builder.with_nameserver(addr, DnsProtocol::Tcp);
-    }
-    builder.build()
 }
 
 /// Create a MinimalAddr from a full EndpointAddr.
@@ -421,26 +415,15 @@ fn beam_dns_resolver() -> DnsResolver {
 /// same custom relay map instead of the default public relays; it is empty when
 /// the sender used the defaults.
 ///
-/// IP addresses are normally stripped (they're discovered at connect time via
-/// relay or mDNS), but when `include_ip_addrs` is set — serverless mode — every
-/// direct address iroh discovered (LAN and any public/port-mapped addresses) is
-/// embedded so the receiver can attempt them all without relying on mDNS.
 pub fn minimal_addr_from_endpoint(
     addr: &EndpointAddr,
     relay_urls: &[String],
-    include_ip_addrs: bool,
 ) -> MinimalAddr {
     let relay = addr.relay_urls().next().map(|r| r.to_string());
-    let ip_addrs = if include_ip_addrs {
-        addr.ip_addrs().map(|a| a.to_string()).collect()
-    } else {
-        Vec::new()
-    };
     MinimalAddr {
         id: addr.id.to_string(),
         relay,
         relay_urls: relay_urls.to_vec(),
-        ip_addrs,
     }
 }
 
@@ -457,20 +440,11 @@ pub fn minimal_addr_to_endpoint(addr: &MinimalAddr) -> Result<EndpointAddr> {
             .context("Failed to parse relay URL from beam code")?;
         endpoint_addr = endpoint_addr.with_relay_url(relay_url);
     }
-    for ip_str in &addr.ip_addrs {
-        let socket_addr = ip_str
-            .parse()
-            .with_context(|| format!("Failed to parse IP address from beam code: {ip_str}"))?;
-        endpoint_addr = endpoint_addr.with_ip_addr(socket_addr);
-    }
     Ok(endpoint_addr)
 }
 
 /// Generate a beam code from endpoint address
 /// Format: base64url(json(BeamToken))
-///
-/// In `serverless` mode the endpoint's discovered direct addresses are embedded
-/// in the code so the receiver can connect without depending on mDNS resolution.
 ///
 /// `relay_urls` is the sender's configured custom relay set (from `--relay-url`,
 /// empty for default relays); it is embedded so the receiver adopts the same
@@ -479,9 +453,8 @@ pub fn generate_code(
     addr: &EndpointAddr,
     key: &[u8; 32],
     relay_urls: &[String],
-    serverless: bool,
 ) -> Result<String> {
-    let minimal_addr = minimal_addr_from_endpoint(addr, relay_urls, serverless);
+    let minimal_addr = minimal_addr_from_endpoint(addr, relay_urls);
 
     let token = BeamToken {
         version: CURRENT_VERSION,
@@ -504,35 +477,17 @@ mod tests {
     use iroh::SecretKey;
 
     #[test]
-    fn serverless_code_embeds_direct_ip_addresses() {
+    fn relay_mode_code_uses_a_minimal_address() {
         let key = [42u8; 32];
         let addr = EndpointAddr::new(SecretKey::generate().public())
             .with_ip_addr("192.168.1.10:4444".parse().unwrap());
 
-        let code = generate_code(&addr, &key, &[], true).unwrap();
+        let code = generate_code(&addr, &key, &[]).unwrap();
+        assert!(code.starts_with("ey"));
         let token = parse_code(&code).unwrap();
         let minimal_addr = token.addr.unwrap();
 
-        assert_eq!(minimal_addr.ip_addrs, vec!["192.168.1.10:4444".to_string()]);
-        // Serverless codes carry no relay URL — that's how the receiver detects
-        // the mode.
-        assert!(minimal_addr.relay.is_none());
-    }
-
-    #[test]
-    fn relay_mode_code_omits_direct_ip_addresses() {
-        let key = [42u8; 32];
-        let addr = EndpointAddr::new(SecretKey::generate().public())
-            .with_ip_addr("192.168.1.10:4444".parse().unwrap());
-
-        let code = generate_code(&addr, &key, &[], false).unwrap();
-        let token = parse_code(&code).unwrap();
-        let minimal_addr = token.addr.unwrap();
-
-        assert!(minimal_addr.ip_addrs.is_empty());
-        // The empty vec is skipped during serialization to keep tokens compact.
-        let serialized = serde_json::to_value(&minimal_addr).unwrap();
-        assert!(serialized.get("ip_addrs").is_none());
+        assert_eq!(minimal_addr.id, addr.id.to_string());
     }
 
     #[test]
@@ -544,7 +499,7 @@ mod tests {
             "https://relay2.example.com".to_string(),
         ];
 
-        let code = generate_code(&addr, &key, &relays, false).unwrap();
+        let code = generate_code(&addr, &key, &relays).unwrap();
         let token = parse_code(&code).unwrap();
         let minimal_addr = token.addr.unwrap();
 
@@ -558,7 +513,7 @@ mod tests {
         let key = [42u8; 32];
         let addr = EndpointAddr::new(SecretKey::generate().public());
 
-        let code = generate_code(&addr, &key, &[], false).unwrap();
+        let code = generate_code(&addr, &key, &[]).unwrap();
         let token = parse_code(&code).unwrap();
         let minimal_addr = token.addr.unwrap();
 

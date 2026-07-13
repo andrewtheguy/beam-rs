@@ -1,79 +1,141 @@
-//! Common PIN utilities for beam transfers.
+//! Short human-typable secrets used by PIN pairing.
 //!
-//! Provides PIN generation with an unambiguous character set
-//! for use by PIN-based exchange flows.
-//!
-//! PIN format: 11 random characters + 1 checksum character (12 total).
-//! The checksum detects most typos before attempting connection.
-//!
-//! The checksum is position-weighted (`sum of charset_index * position mod 60`),
-//! which detects both single-character substitutions and transpositions in most
-//! cases. However, a substitution at position `p` goes undetected when
-//! `(index_delta * p) % charset_len == 0` — roughly a 1-in-12 chance per
-//! position. This is acceptable for a user-facing typo check, not a
-//! cryptographic integrity guarantee.
+//! A mode marker (`A` for normal or `B` for serverless), eight random
+//! Crockford-base32 characters, and a check character form each PIN.
+//! PIN rendezvous keys are time-bucketed, while the secret used by the in-band
+//! SPAKE2 exchange is the canonical PIN itself.
 
+use anyhow::{Context, Result};
+use argon2::{Algorithm, Argon2, Params, Version};
 use rand::Rng;
 
-/// Length of the PIN code in characters (11 random + 1 checksum)
-pub const PIN_LENGTH: usize = 12;
+const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+pub const PIN_LEN: usize = 10;
+const PIN_DATA_LEN: usize = PIN_LEN - 1;
+pub const PIN_LIFETIME_SECS: u64 = 120;
 
-/// Character set for PIN generation (alphanumeric + safe symbols).
-/// Excludes easily confused characters: 0/O, 1/I/l
-pub const PIN_CHARSET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz$#@+";
+const ARGON2_MEM_KIB: u32 = 64 * 1024;
+const ARGON2_TIME: u32 = 3;
+const ARGON2_LANES: u32 = 1;
+const KDF_SALT_DOMAIN: &[u8] = b"beam-rs:pin-rendezvous:v2";
 
-/// Compute checksum character for a PIN prefix.
-///
-/// The checksum is computed by summing each character's charset index multiplied
-/// by its 1-based position, then taking modulo charset length (60) to get the
-/// checksum character index. The position weighting detects transpositions
-/// (e.g., "AB" vs "BA"). A single-character substitution at position `p` is
-/// undetected when `(index_delta * p) % 60 == 0`, which occurs for ~1 in 12
-/// possible substitutions at each position.
-pub fn compute_checksum(pin_prefix: &str) -> Option<char> {
-    let mut sum: usize = 0;
-    for (i, c) in pin_prefix.chars().enumerate() {
-        let idx = PIN_CHARSET.iter().position(|&ch| ch == c as u8)?;
-        sum += idx * (i + 1);
-    }
-    Some(PIN_CHARSET[sum % PIN_CHARSET.len()] as char)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinMode {
+    Normal,
+    Serverless,
 }
 
-/// Validate PIN format and checksum.
-///
-/// Returns true if the PIN has correct length, uses only valid characters,
-/// and has a valid checksum as the last character.
-pub fn validate_pin(pin: &str) -> bool {
-    if pin.len() != PIN_LENGTH {
-        return false;
+impl PinMode {
+    fn marker(self) -> char {
+        match self {
+            Self::Normal => 'A',
+            Self::Serverless => 'B',
+        }
     }
-    // All chars must be from charset
-    if !pin.chars().all(|c| PIN_CHARSET.contains(&(c as u8))) {
-        return false;
-    }
-    // Verify checksum (last char)
-    let prefix = &pin[..PIN_LENGTH - 1];
-    let expected_checksum = compute_checksum(prefix);
-    let actual_checksum = pin.chars().last();
-    expected_checksum == actual_checksum
 }
 
-/// Generate a random 12-character PIN with checksum.
-///
-/// Uses a character set that excludes easily confused characters (0/O, 1/I/l)
-/// and includes uppercase, lowercase, digits, and symbols for high entropy.
-/// The last character is a checksum for early typo detection.
-pub fn generate_pin() -> String {
+fn check_char(data: &[u8]) -> u8 {
+    let mut sum = 0usize;
+    for (index, byte) in data.iter().enumerate() {
+        let alphabet_index = ALPHABET.iter().position(|item| item == byte).unwrap_or(0);
+        sum += alphabet_index * (index + 1);
+    }
+    ALPHABET[sum % ALPHABET.len()]
+}
+
+pub fn generate_pin(mode: PinMode) -> String {
     let mut rng = rand::thread_rng();
-    let prefix: String = (0..PIN_LENGTH - 1)
-        .map(|_| {
-            let idx = rng.gen_range(0..PIN_CHARSET.len());
-            PIN_CHARSET[idx] as char
+    let mut output = String::with_capacity(PIN_LEN);
+    output.push(mode.marker());
+    while output.len() < PIN_DATA_LEN {
+        output.push(ALPHABET[rng.gen_range(0..ALPHABET.len())] as char);
+    }
+    output.push(check_char(output.as_bytes()) as char);
+    output
+}
+
+pub fn normalize_pin(input: &str) -> Option<String> {
+    let mut output = String::with_capacity(PIN_LEN);
+    for character in input.chars() {
+        if matches!(character, ' ' | '-' | '\t') {
+            continue;
+        }
+        let mapped = match character.to_ascii_uppercase() {
+            'I' | 'L' => '1',
+            'O' => '0',
+            other => other,
+        };
+        if !ALPHABET.contains(&(mapped as u8)) {
+            return None;
+        }
+        output.push(mapped);
+        if output.len() > PIN_LEN {
+            return None;
+        }
+    }
+    if output.len() != PIN_LEN {
+        return None;
+    }
+    let (data, check) = output.as_bytes().split_at(PIN_DATA_LEN);
+    (pin_mode(&output).is_some() && check[0] == check_char(data)).then_some(output)
+}
+
+pub fn pin_mode(canonical_pin: &str) -> Option<PinMode> {
+    if canonical_pin.len() != PIN_LEN {
+        return None;
+    }
+    match canonical_pin.as_bytes()[0] {
+        b'A' => Some(PinMode::Normal),
+        b'B' => Some(PinMode::Serverless),
+        _ => None,
+    }
+}
+
+pub fn looks_like_pin(input: &str) -> bool {
+    let canonical: Vec<char> = input
+        .chars()
+        .filter(|character| !matches!(character, ' ' | '-' | '\t'))
+        .map(|character| match character.to_ascii_uppercase() {
+            'I' | 'L' => '1',
+            'O' => '0',
+            other => other,
         })
         .collect();
-    let checksum =
-        compute_checksum(&prefix).expect("Generated prefix should always compute valid checksum");
-    format!("{}{}", prefix, checksum)
+    canonical.len() == PIN_LEN
+        && canonical
+            .iter()
+            .all(|character| ALPHABET.contains(&(*character as u8)))
+}
+
+pub fn format_pin(canonical: &str) -> String {
+    if canonical.len() != PIN_LEN || !canonical.is_ascii() {
+        return canonical.to_ascii_uppercase();
+    }
+    let midpoint = PIN_LEN / 2;
+    format!("{}-{}", &canonical[..midpoint], &canonical[midpoint..])
+}
+
+pub fn current_bucket() -> u64 {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    seconds / PIN_LIFETIME_SECS
+}
+
+pub fn derive_key_material(canonical_pin: &str, bucket: u64) -> Result<[u8; 32]> {
+    let params = Params::new(ARGON2_MEM_KIB, ARGON2_TIME, ARGON2_LANES, Some(32))
+        .map_err(|error| anyhow::anyhow!("invalid Argon2 parameters: {error}"))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut salt = Vec::with_capacity(KDF_SALT_DOMAIN.len() + 8);
+    salt.extend_from_slice(KDF_SALT_DOMAIN);
+    salt.extend_from_slice(&bucket.to_be_bytes());
+    let mut output = [0u8; 32];
+    argon2
+        .hash_password_into(canonical_pin.as_bytes(), &salt, &mut output)
+        .map_err(|error| anyhow::anyhow!("Argon2 key derivation failed: {error}"))
+        .context("deriving rendezvous key from PIN")?;
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -81,103 +143,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pin_generation() {
-        let pin = generate_pin();
-        assert_eq!(pin.len(), PIN_LENGTH);
-        // Verify all chars are from charset
-        for c in pin.chars() {
-            assert!(PIN_CHARSET.contains(&(c as u8)));
+    fn generated_pins_normalize() {
+        for mode in [PinMode::Normal, PinMode::Serverless] {
+            for _ in 0..100 {
+                let pin = generate_pin(mode);
+                assert_eq!(normalize_pin(&pin), Some(pin.clone()));
+                assert_eq!(pin_mode(&pin), Some(mode));
+            }
         }
     }
 
     #[test]
-    fn test_pin_generation_uniqueness() {
-        let pin1 = generate_pin();
-        let pin2 = generate_pin();
-        // Very unlikely to be the same
-        assert_ne!(pin1, pin2);
+    fn normalization_accepts_grouping_case_and_lookalikes() {
+        let canonical = "A11000000F";
+        assert_eq!(normalize_pin("aiioo-ooooF").as_deref(), Some(canonical));
+        assert_eq!(format_pin(canonical), "A1100-0000F");
     }
 
     #[test]
-    fn test_generated_pin_has_valid_checksum() {
-        // Generate multiple PINs and verify they all pass validation
-        for _ in 0..100 {
-            let pin = generate_pin();
-            assert!(validate_pin(&pin), "Generated PIN should be valid: {}", pin);
-        }
+    fn formatting_leaves_invalid_lengths_and_non_ascii_unsplit() {
+        assert_eq!(format_pin("short"), "SHORT");
+        assert_eq!(format_pin("aaaaéaaaa"), "AAAAéAAAA");
     }
 
     #[test]
-    fn test_checksum_computation() {
-        let prefix = "AAAAAAAAAAA"; // 11 chars
-        let checksum = compute_checksum(prefix);
-        assert!(checksum.is_some());
-        // Consistent checksum for same input
-        assert_eq!(checksum, compute_checksum(prefix));
+    fn normalization_rejects_bad_checksum() {
+        let pin = generate_pin(PinMode::Normal);
+        let replacement = if pin.ends_with('0') { '1' } else { '0' };
+        let invalid = format!("{}{replacement}", &pin[..PIN_DATA_LEN]);
+        assert!(normalize_pin(&invalid).is_none());
+        assert!(looks_like_pin(&invalid));
     }
 
     #[test]
-    fn test_validate_pin_wrong_length() {
-        assert!(!validate_pin("short"));
-        assert!(!validate_pin("this_is_way_too_long_to_be_a_pin"));
+    fn normalization_rejects_unknown_mode_marker() {
+        let mut pin = "C12345678".to_string();
+        pin.push(check_char(pin.as_bytes()) as char);
+        assert!(normalize_pin(&pin).is_none());
+        assert!(looks_like_pin(&pin));
     }
 
     #[test]
-    fn test_validate_pin_invalid_chars() {
-        // Contains '0' which is not in charset
-        assert!(!validate_pin("000000000000"));
-        // Contains 'O' which is not in charset
-        assert!(!validate_pin("OOOOOOOOOOOO"));
-    }
-
-    #[test]
-    fn test_validate_pin_wrong_checksum() {
-        let pin = generate_pin();
-        // Corrupt the checksum (last character)
-        let mut chars: Vec<char> = pin.chars().collect();
-        let last_idx = chars.len() - 1;
-        // Change checksum to a different valid character
-        chars[last_idx] = if chars[last_idx] == '2' { '3' } else { '2' };
-        let corrupted: String = chars.into_iter().collect();
-        assert!(!validate_pin(&corrupted), "Corrupted PIN should be invalid");
-    }
-
-    #[test]
-    fn test_validate_pin_typo_detection() {
-        // Use fixed values to avoid flakiness. A typo can coincidentally produce
-        // the same checksum when (index_delta * position) % charset_len == 0.
-        // Each case changes a character at a different position to exercise
-        // the position-weighted checksum across the full PIN length.
-        let cases: &[(&str, &str)] = &[
-            // (valid prefix, typo prefix) — each typo changes one character
-            // pos 0: '2' (idx 0) -> 'A' (idx 8), delta*1 = 8, 8%60 != 0
-            ("23456789ABC", "A3456789ABC"),
-            // pos 2: '4' (idx 2) -> 'H' (idx 15), delta*3 = 39, 39%60 != 0
-            ("23456789ABC", "23H56789ABC"),
-            // pos 5: '7' (idx 5) -> 'Z' (idx 31), delta*6 = 156, 156%60 = 36 != 0
-            ("23456789ABC", "23456Z89ABC"),
-            // pos 10: 'C' (idx 10) -> 'e' (idx 36), delta*11 = 286, 286%60 = 46 != 0
-            ("23456789ABC", "23456789ABe"),
-            // different base prefix, pos 3: 'f' (idx 37) -> '5' (idx 3), delta*4 = -136, 136%60 = 16 != 0
-            ("RNcfWs$2qTb", "RNc5Ws$2qTb"),
-            // different base prefix, pos 8: '#' (idx 57) -> 'K' (idx 17), delta*9 = -360, 360%60 = 0
-            // — this would NOT change the checksum, so we use 'L' (idx 18) instead:
-            // delta*9 = -351, 351%60 = 51 != 0
-            ("ab3+@XYZ#Kp", "ab3+@XYZLKP"),
-        ];
-
-        for (valid_prefix, typo_prefix) in cases {
-            let checksum = compute_checksum(valid_prefix).unwrap();
-            let pin = format!("{}{}", valid_prefix, checksum);
-            assert!(validate_pin(&pin), "Base PIN should be valid: {}", pin);
-
-            let typo_pin = format!("{}{}", typo_prefix, checksum);
-            assert!(
-                !validate_pin(&typo_pin),
-                "PIN with typo should be invalid: {} (from {})",
-                typo_pin,
-                valid_prefix
-            );
-        }
+    fn rendezvous_derivation_is_bucketed() {
+        let pin = generate_pin(PinMode::Normal);
+        assert_eq!(
+            derive_key_material(&pin, 42).unwrap(),
+            derive_key_material(&pin, 42).unwrap()
+        );
+        assert_ne!(
+            derive_key_material(&pin, 42).unwrap(),
+            derive_key_material(&pin, 43).unwrap()
+        );
     }
 }

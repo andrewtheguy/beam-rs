@@ -15,6 +15,12 @@ pub fn status(line: &str) {
     eprintln!("{}", line);
 }
 
+/// Replace a short-lived status message on the current terminal line.
+pub fn transient_status(line: &str) {
+    eprint!("\r{line:<40}\r");
+    let _ = std::io::stderr().flush();
+}
+
 /// Write an informational line to stdout.
 pub fn info(line: &str) {
     println!("{}", line);

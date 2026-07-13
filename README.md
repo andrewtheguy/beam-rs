@@ -11,7 +11,8 @@ A secure, cross-platform, single-binary peer-to-peer file transfer tool with dir
 - **Resumable file transfers** - Interrupted file downloads can resume from receiver partial state (folder transfers are streamed tar archives and are not resumable)
 - **File and folder transfers** - Send individual files or entire directories (automatically archived)
 - **Multiple transport modes** - iroh (recommended) and Tor
-- **Serverless transfers** - direct transfers with no third-party server; currently discovered direct addresses (LAN and any public/port-mapped addresses) are embedded in the beam code, with mDNS as a fallback (`beam-rs send --serverless`)
+- **Serverless transfers** - direct transfers with no third-party server; a copy/paste code embeds the node ID, a fresh session secret, and discovered direct addresses, with mDNS as a fallback (`beam-rs send --serverless`)
+- **LAN-only PIN pairing** - `--serverless --pin` discovers the sender over mDNS without a relay, Nostr, DNS publisher, or copied long code
 - **NAT traversal** - Automatic relay fallback for iroh
 - **Anonymous transfers** - Tor hidden services via `beam-rs send --tor` for anonymity
 - **Cross-platform** - Standalone release binaries for Linux x86_64/aarch64, macOS Apple Silicon, and Windows x86_64 (stable releases)
@@ -75,6 +76,7 @@ beam-rs send /path/to/folder --folder
 ```
 
 #### Custom Iroh Relays
+
 - Default behavior uses iroh's public relay fallback plus direct P2P.
 - For self-hosted setups, set the relay(s) on the **sender** only — they are
   embedded in the beam code, so the receiver adopts them automatically:
@@ -84,21 +86,37 @@ beam-rs send /path/to/folder --folder
     ```
 - Multiple `--relay-url` flags are supported for failover.
 
-### 2. Serverless Mode - `send --serverless`
-*No third-party server (primarily for same-network/LAN transfers). The only mode that works without internet access.*
+### 2. PIN Mode - `send --pin`
 
-Use this mode to transfer without any third-party server (no relay, no Nostr).
-It uses the same iroh transport and beam code as the default mode, but disables
-relays entirely: the beam code carries the sender endpoint ID plus the direct
-addresses discovered before the code is printed — LAN interfaces and any public
-or port-mapped (UPnP/PCP/NAT-PMP) addresses — so the receiver attempts them all
-directly, with mDNS as a fallback. The sender waits briefly for direct address
-discovery, then prints the code even if discovery is still catching up. This mode
-is primarily intended for transfers on the same LAN; it is not strictly
-local-only (enforcing that would be an unnecessary burden), so a WAN connection
-may also succeed when a public/port-mapped address is reachable, though NAT and
-firewalls commonly prevent it. The receiver auto-detects serverless mode from the
-code (no flag needed).
+*Short-lived PIN discovery over Nostr and the local network, with SPAKE2 authentication.*
+
+```bash
+# Sender
+beam-rs send --pin /path/to/file
+
+# Receiver (enter the displayed PIN)
+beam-rs receive
+```
+
+The sender advertises only its encrypted ephemeral node ID, never a beam code or
+content key. An `A` at the start of the ten-character PIN tells the receiver to
+race Nostr and mDNS lookups, so same-LAN pairing can still work without
+internet. The displayed `AXXXX-XXXXX` PIN is valid for one
+120-second window. If no receiver starts connecting, the sender exits instead of
+refreshing it.
+
+### 3. Serverless Mode - `send --serverless`
+
+*No third-party server, primarily for same-network/LAN transfers.*
+
+Use this mode to transfer without any third-party server (no iroh relay, Nostr,
+or internet-backed DNS discovery). It uses iroh with relays disabled and prints
+a self-contained beam code carrying the ephemeral node ID, a fresh
+256-bit session secret, and every direct address discovered before the code is
+printed. The receiver tries those addresses immediately and retains mDNS as a
+fallback. The embedded addresses make the mode more robust on networks where
+mDNS is unavailable. A public/port-mapped address may also work across networks,
+but typical NAT and firewall rules make a shared LAN the expected environment.
 
 ```bash
 # Send without a server
@@ -107,14 +125,23 @@ beam-rs send --serverless /path/to/file
 # Send folder without a server
 beam-rs send --serverless /path/to/folder --folder
 
-# Receive (paste the printed beam code)
+# Receive (paste the printed beam code; it is auto-detected)
+beam-rs receive
+
+# Same serverless transport, but exchange only a short PIN over mDNS
+beam-rs send --serverless --pin /path/to/file
 beam-rs receive
 ```
 
-> `--serverless` cannot be combined with `--pin` (PIN exchange uses Nostr, a
-> third-party server) or `--relay-url` (relays are disabled).
+`--serverless --pin` publishes no payload or secret: mDNS carries an encrypted
+node-ID rendezvous record, and SPAKE2 authenticates the PIN in-band. The sender
+uses a `BXXXX-XXXXX` PIN so the receiver automatically disables Nostr, iroh
+relays, and internet-backed DNS. It uses one PIN for 120 seconds and exits if
+nobody connects; it does not refresh.
+`--serverless` cannot be combined with `--relay-url` because relays are disabled.
 
-### 3. Tor Mode - `send --tor`
+### 4. Tor Mode - `send --tor`
+
 *Anonymous transfers via Tor hidden services. Use when anonymity is required. Requires internet access.*
 
 ```bash
@@ -122,13 +149,15 @@ beam-rs send --tor /path/to/file
 ```
 
 ### Receiving
-`beam-rs receive` handles iroh, serverless, and Tor codes — the transport is
-auto-detected from the beam code.
+
+`beam-rs receive` handles iroh, serverless, Tor, and PIN inputs. Serverless beam
+codes are auto-detected. PINs beginning with `A` use normal Nostr+LAN discovery;
+PINs beginning with `B` automatically use LAN-only discovery with relays and
+internet-backed DNS disabled.
 
 ```bash
 beam-rs receive
-# Prompts for the beam code or PIN (a 12-character PIN is auto-detected and
-# resolved via Nostr).
+# Prompts for a beam code or 10-character PIN.
 
 # Optional output directory
 beam-rs receive --output /path/to/downloads
@@ -150,21 +179,24 @@ For protocol details and wire formats, see [ARCHITECTURE.md](docs/ARCHITECTURE.m
 ## Security
 
 All modes provide end-to-end encryption.
-- **Non-PIN modes (iroh, iroh `--serverless`, Tor)**: The **Beam Code** carries the key/address information.
-- **PIN mode (`send --pin`)**: Nostr relays store an encrypted beam code so the receiver can find the sender; after the iroh connection is established, SPAKE2 derives the content-encryption key from the PIN.
+- **Default iroh and Tor**: The beam code carries the key/address information.
+- **Serverless**: The copied beam code carries a 256-bit session secret and direct address hints; SPAKE2 derives the content-encryption key.
+- **PIN mode (`send --pin`)**: Nostr and mDNS carry only an encrypted ephemeral node ID. After connection, SPAKE2 proves PIN possession and derives the content-encryption key. The leading `A` selects normal discovery; `--serverless --pin` emits a leading `B`, which makes the receiver limit discovery to mDNS and disable relays/DNS automatically.
 
 | Mode | Type | Key Exchange | Transport Encryption | Content Encryption |
 |------|------|--------------|---------------------|-------------------|
 | iroh | Internet | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
-| iroh (`--pin`) | Internet | Nostr code lookup + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
-| iroh (`--serverless`) | Direct (LAN/public) | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
+| iroh (`--pin`) | Internet or LAN | Encrypted node-ID rendezvous + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
+| iroh (`--serverless`) | Direct (LAN/public) | Copied 256-bit secret + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
+| iroh (`--serverless --pin`) | Direct (LAN) | mDNS node-ID rendezvous + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
 | Tor (`send --tor`) | Internet | Beam Code | Tor circuits | AES-256-GCM |
 
 All modes use dual-layer encryption (transport + content). `--serverless` is the
 same iroh transport with relays disabled, so it keeps QUIC/TLS 1.3 on the wire.
 
 Relay servers (iroh, Tor) never see decrypted content or encryption keys. Nostr
-relays used by PIN mode see only the encrypted beam code and lookup tags.
+relays used by PIN mode see only an encrypted ephemeral iroh node ID under a
+PIN-derived author key. Serverless modes contact neither kind of server.
 
 For detailed security model, see [ARCHITECTURE.md](docs/ARCHITECTURE.md#security-model).
 

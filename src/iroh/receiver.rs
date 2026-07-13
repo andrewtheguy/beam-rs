@@ -2,15 +2,16 @@ use anyhow::{Context, Result};
 use iroh::endpoint::{
     AuthenticationError, ConnectError, ConnectWithOptsError, ConnectingError,
 };
+use iroh::EndpointAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::timeout;
 
 use super::common::{
-    ALPN, OwnedIrohDuplex, create_receiver_endpoint, is_connection_error_network_related,
-    minimal_addr_to_endpoint, watch_connection_paths,
+    ALPN, EndpointReadiness, OwnedIrohDuplex, create_receiver_endpoint,
+    is_connection_error_network_related, minimal_addr_to_endpoint, watch_connection_paths,
 };
-use crate::auth::PinInfo;
+use crate::auth::PairingAuth;
 use crate::auth::spake2::handshake_as_initiator;
 use beam_rs::core::transfer::run_receiver_transfer;
 use beam_rs::core::beam::parse_code;
@@ -19,14 +20,10 @@ use beam_rs::ui;
 /// Receive a file or folder using a beam code.
 /// Auto-detects whether it's a file or folder transfer based on the header.
 ///
-/// `pin_info` is `Some(PinInfo)` when PIN mode is active,
-/// triggering a SPAKE2 handshake to derive the encryption key.
 pub async fn receive(
     code: &str,
     output_dir: Option<PathBuf>,
     no_resume: bool,
-    pin_info: Option<PinInfo>,
-    serverless: bool,
 ) -> Result<()> {
     ui::status("Parsing beam code...");
 
@@ -44,10 +41,53 @@ pub async fn receive(
     let addr = minimal_addr_to_endpoint(&minimal_addr)
         .context("Failed to parse endpoint address")?;
 
-    ui::status("Code valid. Connecting to sender...");
+    receive_internal(
+        addr,
+        relay_urls,
+        key,
+        None,
+        EndpointReadiness::RelayOnline,
+        output_dir,
+        no_resume,
+    )
+    .await
+}
+
+/// Receive through a PIN or serverless pairing code. The session secret is proven
+/// with SPAKE2 and its result becomes the content-encryption key.
+pub async fn receive_paired(
+    addr: EndpointAddr,
+    secret: String,
+    readiness: EndpointReadiness,
+    output_dir: Option<PathBuf>,
+    no_resume: bool,
+) -> Result<()> {
+    let session_id = addr.id.to_string();
+    receive_internal(
+        addr,
+        Vec::new(),
+        [0u8; 32],
+        Some(PairingAuth { secret, session_id }),
+        readiness,
+        output_dir,
+        no_resume,
+    )
+    .await
+}
+
+async fn receive_internal(
+    addr: EndpointAddr,
+    relay_urls: Vec<String>,
+    key: [u8; 32],
+    pairing_auth: Option<PairingAuth>,
+    readiness: EndpointReadiness,
+    output_dir: Option<PathBuf>,
+    no_resume: bool,
+) -> Result<()> {
+    ui::status("Pairing data valid. Connecting to sender...");
 
     // Create iroh endpoint
-    let endpoint = create_receiver_endpoint(relay_urls, serverless).await?;
+    let endpoint = create_receiver_endpoint(relay_urls, readiness).await?;
 
     // Connect to sender
     let conn = endpoint.connect(addr, ALPN).await.map_err(|e| {
@@ -100,9 +140,8 @@ pub async fn receive(
         }
     };
 
-    // Perform SPAKE2 handshake if PIN mode is active (receiver = initiator)
-    let (key, send_stream) = if let Some(ref pin_info) = pin_info {
-        let (pin, transfer_id) = (&pin_info.pin, &pin_info.transfer_id);
+    // PIN and serverless modes both authenticate their session secret with SPAKE2.
+    let (key, send_stream) = if let Some(ref pairing_auth) = pairing_auth {
         // Read the "ready" byte sent by the sender to confirm the stream is established.
         // See sender.rs for why this is needed (QUIC stream materialization).
         let mut ready = [0u8; 1];
@@ -122,7 +161,11 @@ pub async fn receive(
             super::common::IrohDuplex::new(&mut send_stream_mut, &mut recv_stream);
         let handshake_result = timeout(
             Duration::from_secs(30),
-            handshake_as_initiator(&mut duplex, pin, transfer_id),
+            handshake_as_initiator(
+                &mut duplex,
+                &pairing_auth.secret,
+                &pairing_auth.session_id,
+            ),
         )
         .await
         .map_err(|_| anyhow::anyhow!("SPAKE2 handshake timed out"))
