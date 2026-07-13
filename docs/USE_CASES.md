@@ -6,16 +6,25 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 **Scenario**: You need to transfer files without relying on any third-party server (relay or Nostr), typically on a shared LAN or an air-gapped network.
 
 **Solution**: **Serverless Mode** (`beam-rs send --serverless`)
-- **Why**: Same iroh transport as the default mode, but with relays disabled. The sender embeds the direct addresses discovered before the code is printed (LAN interfaces and any public/port-mapped addresses) in the beam code, so the receiver attempts them all directly, with mDNS as a fallback. No relay or Nostr server is contacted. The expected use case is a shared LAN — it is not *strictly* local-only (enforcing that would be an unnecessary burden), so a WAN connection can succeed if a public/port-mapped address happens to be reachable, but NAT/firewalls usually prevent it.
+- **Why**: Same iroh transport as the default mode, but with relays and internet discovery disabled. The sender's pasted serverless code embeds its node ID, a 256-bit session secret, and discovered direct addresses. The receiver attempts those addresses directly, with mDNS as a fallback. No relay or Nostr server is contacted.
 - **Command**:
   ```bash
   # Sender
   beam-rs send --serverless /path/to/file
 
-  # Receiver (paste the printed beam code at the prompt; serverless is auto-detected)
+  # Receiver (paste the printed serverless code; it is auto-detected)
   beam-rs receive
   ```
-- **Experience**: The sender waits briefly for direct address discovery and then prints a beam code. Share the code out-of-band; the receiver auto-detects serverless mode from the code (no relay URL) and connects directly via the embedded addresses or mDNS.
+- **Experience**: The sender waits for direct address discovery and prints a self-contained code. Share it out-of-band; the receiver connects via its embedded addresses or mDNS and authenticates its copied secret with SPAKE2.
+
+**Short-code alternative**: When copying is inconvenient, use the same serverless transport with LAN-only PIN discovery:
+
+```bash
+beam-rs send --serverless --pin /path/to/file
+beam-rs receive --serverless
+```
+
+The node-ID record travels only over mDNS. The PIN lasts 60 seconds and does not refresh.
 
 ---
 
@@ -37,10 +46,10 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 ---
 
 ## 3. Cannot Copy-Paste (Cross-device / Remote Terminal)
-**Scenario**: You are sending a file from a laptop to a friend's phone, or to a remote server console where you cannot easily copy and paste the long "Beam Code". Typing a huge base64 string is impossible.
+**Scenario**: You are sending a file to another device or remote console where copying and pasting a long code is inconvenient.
 
 **Solution A**: **PIN Mode** (Recommended when copy-paste is hard)
-- **Why**: Uses a short 12-character PIN instead of typing a long code. The receiver uses the PIN to find and decrypt the beam code from Nostr, then the peers derive the content-encryption key with SPAKE2 over the default iroh transport. Requires internet for the Nostr exchange.
+- **Why**: Uses a short eight-character PIN instead of a long code. The receiver races an encrypted node-ID lookup over Nostr and mDNS, then the peers derive the content-encryption key with SPAKE2. It works across the internet or offline when both devices share a LAN.
 - **Command**:
   ```bash
   # Sender (default iroh transport with PIN exchange)
@@ -50,18 +59,18 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   beam-rs receive
   ```
 - **Experience**:
-  1. Sender sees: `PIN: A1b2C3d4E5f6` (example)
-  2. Receiver runs `receive` and enters `A1b2C3d4E5f6` at the prompt — the PIN is
-     auto-detected (vs. a full beam code) and resolved via Nostr.
+  1. Sender sees: `PIN: K7P2-9QXM` (example).
+  2. Receiver enters that PIN. It is auto-detected and resolved over Nostr or mDNS.
+  3. The PIN is available for one 60-second window; the sender exits instead of refreshing it.
 
 **Solution B**: **Serverless Mode** (No third-party server)
-- **Why**: Contacts no relay or Nostr server (relays disabled); the sender embeds its discovered direct addresses in the beam code and the receiver connects directly, with mDNS as a fallback. Note this still requires moving the beam code between devices — handy when you can scan/share the code but want zero third-party involvement.
+- **Why**: Contacts no relay, Nostr, or internet discovery service. The copied code embeds direct address hints and a full session secret. If copying is impossible, combine `--serverless --pin` and enter the short PIN on a receiver started with `--serverless`.
 - **Command**:
   ```bash
   # Sender
   beam-rs send --serverless /path/to/file
 
-  # Receiver (paste the printed beam code at the prompt)
+  # Receiver (paste the serverless code)
   beam-rs receive
   ```
 
@@ -123,10 +132,12 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
   automatically — just run `beam-rs receive`, no relay flag needed.
 
 **Solution B**: **Serverless Mode** (No third-party server)
-- **Why**: Relays disabled and no external dependencies; the sender's discovered direct addresses are embedded in the beam code, with mDNS as a fallback. Works completely offline on a shared LAN.
+- **Why**: Relays and internet discovery are disabled; the sender's discovered direct addresses are embedded in the serverless code, with mDNS as a fallback. Works completely offline on a shared LAN. Add `--pin` on both commands when a short code is preferable to copy/paste.
 - **Command**:
   ```bash
   beam-rs send --serverless /path/to/file
+  # or: beam-rs send --serverless --pin /path/to/file
+  # receiver for PIN form: beam-rs receive --serverless
   ```
 
 ---

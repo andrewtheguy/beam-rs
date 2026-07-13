@@ -14,12 +14,10 @@ path = "src/main.rs"
 [dependencies]
 # Core
 tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
-hex = "0.4"
 rand = "0.8"
 futures = "0.3"
 log = "0.4"
@@ -41,16 +39,13 @@ crc32fast = "1.4"
 # Interactive line prompts
 rustyline = "18"
 
-# Nostr signaling + HTTP client for relay fetching
-nostr-sdk = "0.44.1"
-reqwest = { version = "0.13", features = ["json", "multipart", "stream"] }
+# Nostr PIN rendezvous
+nostr-sdk = { version = "0.44.1", features = ["nip44"] }
 
 # iroh transport
 iroh = "1.0.2"
 iroh-mdns-address-lookup = "0.4.0"
-# Used to probe the host DNS config before binding; see beam_dns_resolver.
-# Pinned to the same version iroh pulls in so cargo unifies on one copy.
-hickory-resolver = "0.26.1"
+swarm-discovery = "0.6.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 # Tor/Onion transport

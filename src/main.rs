@@ -8,11 +8,12 @@ use beam_rs::core::beam;
 use beam_rs::ui;
 
 mod auth;
-mod signaling;
-use auth::PinInfo;
 
 mod iroh;
 use iroh::{receiver as iroh_receiver, sender as iroh_sender};
+use iroh::common::EndpointReadiness;
+use iroh::sender::PairingMode;
+use auth::rendezvous::PinChannel;
 
 mod onion;
 use onion::{receiver as onion_receiver, sender as onion_sender};
@@ -39,7 +40,7 @@ enum Commands {
         #[arg(long)]
         folder: bool,
 
-        /// Use PIN-based code exchange for Nostr (prompts for PIN input)
+        /// Use a single 60-second PIN advertised over Nostr and the LAN
         #[arg(long)]
         pin: bool,
 
@@ -47,21 +48,18 @@ enum Commands {
         #[arg(long)]
         relay_url: Vec<String>,
 
-        /// Serverless: no third-party server: disable relays (and Nostr), embed
-        /// all discovered IPs (LAN and public) in the beam code, and connect
-        /// directly via those with mDNS as a fallback. Primarily for same-LAN
-        /// transfers (not strictly local-only). Incompatible with --pin and
-        /// --relay-url.
+        /// Use no third-party services: copy/paste a direct-address code, or
+        /// combine with --pin for LAN-only mDNS PIN discovery.
         #[arg(long)]
         serverless: bool,
 
         /// Send via a Tor hidden service (anonymous) instead of iroh.
-        /// Incompatible with --pin, --relay-url, and --serverless.
+        /// Incompatible with iroh pairing and relay options.
         #[arg(long)]
         tor: bool,
     },
 
-    /// Receive a file or folder using a beam code or PIN
+    /// Receive a file or folder using a beam code, PIN, or serverless code
     Receive {
         /// Output directory (default: current directory)
         #[arg(short, long)]
@@ -70,6 +68,10 @@ enum Commands {
         /// Disable resumable transfers (don't save partial downloads)
         #[arg(long)]
         no_resume: bool,
+
+        /// With a PIN, resolve only over mDNS and disable iroh relays/DNS
+        #[arg(long)]
+        serverless: bool,
     },
 }
 
@@ -155,19 +157,12 @@ fn init_tracing() {
         .init();
 }
 
-/// Prompt for a beam code or PIN, re-prompting on empty input.
+/// Prompt for a beam code, PIN, or serverless code, re-prompting on empty input.
 ///
-/// Auto-detection happens at the call site via [`crate::auth::pin::validate_pin`].
-/// As a usability aid, an input that has the PIN length and uses only PIN
-/// characters but fails the checksum is treated as a mistyped PIN and re-prompted
-/// (pre-filled for editing) rather than silently falling through to be parsed as a
-/// beam code, which would produce a confusing "invalid code" error.
-fn prompt_code_or_pin() -> Result<String> {
-    use crate::auth::pin::{PIN_CHARSET, PIN_LENGTH, validate_pin};
-
+fn prompt_pairing_input() -> Result<String> {
     let mut initial = String::new();
     loop {
-        let input = ui::prompt_line("Enter beam code or PIN: ", &initial)?
+        let input = ui::prompt_line("Enter beam code, PIN, or serverless code: ", &initial)?
             .trim()
             .to_string();
 
@@ -180,9 +175,9 @@ fn prompt_code_or_pin() -> Result<String> {
         // Looks like a PIN attempt (right length, valid charset) but the checksum
         // doesn't match — almost certainly a typo. Re-prompt instead of treating
         // it as a beam code.
-        let looks_like_pin = input.len() == PIN_LENGTH
-            && input.bytes().all(|b| PIN_CHARSET.contains(&b));
-        if looks_like_pin && !validate_pin(&input) {
+        if crate::auth::pin::looks_like_pin(&input)
+            && crate::auth::pin::normalize_pin(&input).is_none()
+        {
             ui::info("That looks like a PIN but the checksum is invalid — please re-check it.");
             initial = input;
             continue;
@@ -218,54 +213,81 @@ async fn run(command: Commands) -> Result<()> {
                 }
                 return Ok(());
             }
-            if serverless && pin {
+            if (pin || serverless) && !relay_url.is_empty() {
                 anyhow::bail!(
-                    "--serverless cannot be combined with --pin: PIN exchange uses Nostr, \
-                     which requires a third-party server."
+                    "--relay-url is only supported by the default beam-code mode; PIN discovery does not carry custom relay configuration and serverless mode disables relays"
                 );
             }
-            if serverless && !relay_url.is_empty() {
-                anyhow::bail!(
-                    "--serverless cannot be combined with --relay-url: relays are disabled \
-                     in serverless mode."
-                );
-            }
-            if folder {
-                iroh_sender::send_folder(&path, relay_url, pin, serverless).await?;
+            let pairing_mode = if pin {
+                let channel = if serverless {
+                    PinChannel::LanOnly
+                } else {
+                    PinChannel::NostrAndLan
+                };
+                PairingMode::Pin(channel)
+            } else if serverless {
+                PairingMode::Serverless
             } else {
-                iroh_sender::send_file(&path, relay_url, pin, serverless).await?;
+                PairingMode::BeamCode
+            };
+            if folder {
+                iroh_sender::send_folder(&path, relay_url, pairing_mode).await?;
+            } else {
+                iroh_sender::send_file(&path, relay_url, pairing_mode).await?;
             }
         }
 
-        Commands::Receive { output, no_resume } => {
+        Commands::Receive {
+            output,
+            no_resume,
+            serverless,
+        } => {
             // Validate output directory if provided
             validate_output_dir(&output)?;
 
-            // Prompt for the input, then auto-detect whether it is a 12-character
-            // PIN (resolved via Nostr) or a full beam code.
-            let input = prompt_code_or_pin()?;
+            let input = prompt_pairing_input()?;
 
-            let (code, pin_info) = if crate::auth::pin::validate_pin(&input) {
-                ui::status("Searching for beam token via Nostr...");
-
-                // Fetch encrypted token from Nostr using the PIN.
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
-                    crate::auth::nostr_pin::fetch_beam_code_via_pin(&input),
+            if let Some(pin) = crate::auth::pin::normalize_pin(&input) {
+                let channel = if serverless {
+                    PinChannel::LanOnly
+                } else {
+                    PinChannel::NostrAndLan
+                };
+                ui::status(if serverless {
+                    "Searching for the sender on the local network..."
+                } else {
+                    "Searching for the sender via Nostr and the local network..."
+                });
+                let node_id = crate::auth::rendezvous::resolve_pin(&pin, channel).await?;
+                ui::status("Sender found!");
+                let readiness = if serverless {
+                    EndpointReadiness::LanDirect
+                } else {
+                    EndpointReadiness::RelayPreferred
+                };
+                iroh_receiver::receive_paired(
+                    ::iroh::EndpointAddr::new(node_id),
+                    pin,
+                    readiness,
+                    output,
+                    no_resume,
                 )
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "Timeout: Failed to retrieve beam code from Nostr after 30 seconds"
-                    )
-                })??;
-                ui::status("Token found and decrypted!");
-                (result.code, Some(PinInfo { pin: input, transfer_id: result.transfer_id }))
+                .await?;
+            } else if let Some(serverless) = crate::auth::serverless_code::decode(&input)? {
+                iroh_receiver::receive_paired(
+                    serverless.addr,
+                    serverless.secret,
+                    EndpointReadiness::LanDirect,
+                    output,
+                    no_resume,
+                )
+                .await?;
             } else {
-                (input, None)
-            };
-
-            receive_with_code(&code, output, no_resume, pin_info).await?;
+                if serverless {
+                    anyhow::bail!("--serverless requires a PIN or serverless code as input");
+                }
+                receive_with_code(&input, output, no_resume).await?;
+            }
         }
     }
 
@@ -277,7 +299,6 @@ async fn receive_with_code(
     code: &str,
     output: Option<PathBuf>,
     no_resume: bool,
-    pin_info: Option<PinInfo>,
 ) -> Result<()> {
     // Validate code format
     beam::validate_code_format(code)?;
@@ -287,21 +308,11 @@ async fn receive_with_code(
 
     match token.protocol.as_str() {
         beam::PROTOCOL_IROH => {
-            // A serverless code carries an endpoint address with no relay URL
-            // (but embedded direct IPs). Detect that and disable relays on the
-            // receiver to match the sender. Any custom relays the sender used
-            // travel inside the code, so the receiver needs no relay flag.
-            let serverless = token
-                .addr
-                .as_ref()
-                .map(|addr| addr.relay.is_none())
-                .unwrap_or(false);
-            iroh_receiver::receive(code, output, no_resume, pin_info, serverless).await?;
+            iroh_receiver::receive(code, output, no_resume).await?;
         }
         beam::PROTOCOL_TOR => {
             // A Tor code carries an onion address; bootstrap the Tor client and
-            // connect anonymously. `pin_info` is iroh-only and does not apply
-            // to the Tor transport.
+            // connect anonymously.
             onion_receiver::receive_file_tor(code, output, no_resume).await?;
         }
         proto => {
