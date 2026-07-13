@@ -108,7 +108,7 @@ pub fn looks_like_pin(input: &str) -> bool {
 }
 
 pub fn format_pin(canonical: &str) -> String {
-    if canonical.len() != PIN_LEN {
+    if canonical.len() != PIN_LEN || !canonical.is_ascii() {
         return canonical.to_ascii_uppercase();
     }
     let midpoint = PIN_LEN / 2;
@@ -158,6 +158,12 @@ mod tests {
         let canonical = "A11000000F";
         assert_eq!(normalize_pin("aiioo-ooooF").as_deref(), Some(canonical));
         assert_eq!(format_pin(canonical), "A1100-0000F");
+    }
+
+    #[test]
+    fn formatting_leaves_invalid_lengths_and_non_ascii_unsplit() {
+        assert_eq!(format_pin("short"), "SHORT");
+        assert_eq!(format_pin("aaaaéaaaa"), "AAAAéAAAA");
     }
 
     #[test]
