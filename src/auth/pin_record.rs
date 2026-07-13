@@ -56,11 +56,11 @@ mod tests {
     #[test]
     fn payload_round_trips_and_wrong_key_fails() {
         let node_id = iroh::SecretKey::generate().public();
-        let keys = pin_keys("K7P29QXM", 42).unwrap();
+        let keys = pin_keys("AK7P29QXMT", 42).unwrap();
         let content = encrypt_pin_payload(&keys, &node_id).unwrap();
         assert!(!content.contains(&node_id.to_string()));
         assert_eq!(decrypt_pin_payload(&keys, &content), Some(node_id));
-        let wrong = pin_keys("9QXMK7P2", 42).unwrap();
+        let wrong = pin_keys("BK7P29QXMV", 42).unwrap();
         assert_eq!(decrypt_pin_payload(&wrong, &content), None);
     }
 }

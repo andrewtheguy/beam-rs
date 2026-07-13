@@ -21,10 +21,12 @@ This guide describes common scenarios where `beam-rs` shines and which mode to u
 
 ```bash
 beam-rs send --serverless --pin /path/to/file
-beam-rs receive --serverless
+beam-rs receive
 ```
 
-The node-ID record travels only over mDNS. The PIN lasts 60 seconds and does not refresh.
+The `B` at the start of the PIN makes the receiver disable Nostr, relays, and
+internet-backed DNS automatically. The node-ID record travels only over mDNS.
+The PIN lasts 60 seconds and does not refresh.
 
 ---
 
@@ -49,7 +51,7 @@ The node-ID record travels only over mDNS. The PIN lasts 60 seconds and does not
 **Scenario**: You are sending a file to another device or remote console where copying and pasting a long code is inconvenient.
 
 **Solution A**: **PIN Mode** (Recommended when copy-paste is hard)
-- **Why**: Uses a short eight-character PIN instead of a long code. The receiver races an encrypted node-ID lookup over Nostr and mDNS, then the peers derive the content-encryption key with SPAKE2. It works across the internet or offline when both devices share a LAN.
+- **Why**: Uses a short ten-character PIN instead of a long code. Its leading `A` tells the receiver to race an encrypted node-ID lookup over Nostr and mDNS, then the peers derive the content-encryption key with SPAKE2. It works across the internet or offline when both devices share a LAN.
 - **Command**:
   ```bash
   # Sender (default iroh transport with PIN exchange)
@@ -59,12 +61,12 @@ The node-ID record travels only over mDNS. The PIN lasts 60 seconds and does not
   beam-rs receive
   ```
 - **Experience**:
-  1. Sender sees: `PIN: K7P2-9QXM` (example).
+  1. Sender sees: `PIN: AK7P2-9QXMT` (example).
   2. Receiver enters that PIN. It is auto-detected and resolved over Nostr or mDNS.
   3. The PIN is available for one 60-second window; the sender exits instead of refreshing it.
 
 **Solution B**: **Serverless Mode** (No third-party server)
-- **Why**: Contacts no relay, Nostr, or internet discovery service. The copied code embeds direct address hints and a full session secret. If copying is impossible, combine `--serverless --pin` and enter the short PIN on a receiver started with `--serverless`.
+- **Why**: Contacts no relay, Nostr, or internet discovery service. The copied code embeds direct address hints and a full session secret. If copying is impossible, combine `--serverless --pin`; its leading `B` tells a normal receiver to remain LAN-only.
 - **Command**:
   ```bash
   # Sender
@@ -137,7 +139,7 @@ The node-ID record travels only over mDNS. The PIN lasts 60 seconds and does not
   ```bash
   beam-rs send --serverless /path/to/file
   # or: beam-rs send --serverless --pin /path/to/file
-  # receiver for PIN form: beam-rs receive --serverless
+  # receiver for either form: beam-rs receive
   ```
 
 ---

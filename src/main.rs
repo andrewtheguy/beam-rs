@@ -13,6 +13,7 @@ mod iroh;
 use iroh::{receiver as iroh_receiver, sender as iroh_sender};
 use iroh::common::EndpointReadiness;
 use iroh::sender::PairingMode;
+use auth::pin::PinMode;
 use auth::rendezvous::PinChannel;
 
 mod onion;
@@ -68,10 +69,6 @@ enum Commands {
         /// Disable resumable transfers (don't save partial downloads)
         #[arg(long)]
         no_resume: bool,
-
-        /// With a PIN, resolve only over mDNS and disable iroh relays/DNS
-        #[arg(long)]
-        serverless: bool,
     },
 }
 
@@ -172,13 +169,15 @@ fn prompt_pairing_input() -> Result<String> {
             continue;
         }
 
-        // Looks like a PIN attempt (right length, valid charset) but the checksum
-        // doesn't match — almost certainly a typo. Re-prompt instead of treating
-        // it as a beam code.
+        // Looks like a PIN attempt (right length and character set) but its mode
+        // marker or checksum is invalid. Re-prompt instead of treating it as a
+        // beam code.
         if crate::auth::pin::looks_like_pin(&input)
             && crate::auth::pin::normalize_pin(&input).is_none()
         {
-            ui::info("That looks like a PIN but the checksum is invalid — please re-check it.");
+            ui::info(
+                "That looks like a PIN but its mode marker or checksum is invalid — please re-check it.",
+            );
             initial = input;
             continue;
         }
@@ -240,7 +239,6 @@ async fn run(command: Commands) -> Result<()> {
         Commands::Receive {
             output,
             no_resume,
-            serverless,
         } => {
             // Validate output directory if provided
             validate_output_dir(&output)?;
@@ -248,23 +246,22 @@ async fn run(command: Commands) -> Result<()> {
             let input = prompt_pairing_input()?;
 
             if let Some(pin) = crate::auth::pin::normalize_pin(&input) {
-                let channel = if serverless {
-                    PinChannel::LanOnly
-                } else {
-                    PinChannel::NostrAndLan
+                let (channel, readiness, status) = match crate::auth::pin::pin_mode(&pin) {
+                    Some(PinMode::Normal) => (
+                        PinChannel::NostrAndLan,
+                        EndpointReadiness::RelayPreferred,
+                        "Searching for the sender via Nostr and the local network...",
+                    ),
+                    Some(PinMode::Serverless) => (
+                        PinChannel::LanOnly,
+                        EndpointReadiness::LanDirect,
+                        "Searching for the sender on the local network...",
+                    ),
+                    None => unreachable!("normalized PIN has a valid mode marker"),
                 };
-                ui::status(if serverless {
-                    "Searching for the sender on the local network..."
-                } else {
-                    "Searching for the sender via Nostr and the local network..."
-                });
+                ui::status(status);
                 let node_id = crate::auth::rendezvous::resolve_pin(&pin, channel).await?;
                 ui::status("Sender found!");
-                let readiness = if serverless {
-                    EndpointReadiness::LanDirect
-                } else {
-                    EndpointReadiness::RelayPreferred
-                };
                 iroh_receiver::receive_paired(
                     ::iroh::EndpointAddr::new(node_id),
                     pin,
@@ -283,9 +280,6 @@ async fn run(command: Commands) -> Result<()> {
                 )
                 .await?;
             } else {
-                if serverless {
-                    anyhow::bail!("--serverless requires a beam code or PIN as input");
-                }
                 receive_with_code(&input, output, no_resume).await?;
             }
         }

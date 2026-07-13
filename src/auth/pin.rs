@@ -1,6 +1,7 @@
 //! Short human-typable secrets used by PIN pairing.
 //!
-//! Seven random Crockford-base32 characters are followed by a check character.
+//! A mode marker (`A` for normal or `B` for serverless), eight random
+//! Crockford-base32 characters, and a check character form each PIN.
 //! PIN rendezvous keys are time-bucketed, while the secret used by the in-band
 //! SPAKE2 exchange is the canonical PIN itself.
 
@@ -9,14 +10,29 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use rand::Rng;
 
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-pub const PIN_LEN: usize = 8;
+pub const PIN_LEN: usize = 10;
 const PIN_DATA_LEN: usize = PIN_LEN - 1;
 pub const PIN_LIFETIME_SECS: u64 = 60;
 
 const ARGON2_MEM_KIB: u32 = 64 * 1024;
 const ARGON2_TIME: u32 = 3;
 const ARGON2_LANES: u32 = 1;
-const KDF_SALT_DOMAIN: &[u8] = b"beam-rs:pin-rendezvous:v1";
+const KDF_SALT_DOMAIN: &[u8] = b"beam-rs:pin-rendezvous:v2";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinMode {
+    Normal,
+    Serverless,
+}
+
+impl PinMode {
+    fn marker(self) -> char {
+        match self {
+            Self::Normal => 'A',
+            Self::Serverless => 'B',
+        }
+    }
+}
 
 fn check_char(data: &[u8]) -> u8 {
     let mut sum = 0usize;
@@ -27,9 +43,10 @@ fn check_char(data: &[u8]) -> u8 {
     ALPHABET[sum % ALPHABET.len()]
 }
 
-pub fn generate_pin() -> String {
+pub fn generate_pin(mode: PinMode) -> String {
     let mut rng = rand::thread_rng();
     let mut output = String::with_capacity(PIN_LEN);
+    output.push(mode.marker());
     while output.len() < PIN_DATA_LEN {
         output.push(ALPHABET[rng.gen_range(0..ALPHABET.len())] as char);
     }
@@ -60,7 +77,18 @@ pub fn normalize_pin(input: &str) -> Option<String> {
         return None;
     }
     let (data, check) = output.as_bytes().split_at(PIN_DATA_LEN);
-    (check[0] == check_char(data)).then_some(output)
+    (pin_mode(&output).is_some() && check[0] == check_char(data)).then_some(output)
+}
+
+pub fn pin_mode(canonical_pin: &str) -> Option<PinMode> {
+    if canonical_pin.len() != PIN_LEN {
+        return None;
+    }
+    match canonical_pin.as_bytes()[0] {
+        b'A' => Some(PinMode::Normal),
+        b'B' => Some(PinMode::Serverless),
+        _ => None,
+    }
 }
 
 pub fn looks_like_pin(input: &str) -> bool {
@@ -116,22 +144,25 @@ mod tests {
 
     #[test]
     fn generated_pins_normalize() {
-        for _ in 0..100 {
-            let pin = generate_pin();
-            assert_eq!(normalize_pin(&pin), Some(pin));
+        for mode in [PinMode::Normal, PinMode::Serverless] {
+            for _ in 0..100 {
+                let pin = generate_pin(mode);
+                assert_eq!(normalize_pin(&pin), Some(pin.clone()));
+                assert_eq!(pin_mode(&pin), Some(mode));
+            }
         }
     }
 
     #[test]
     fn normalization_accepts_grouping_case_and_lookalikes() {
-        let canonical = "11000003";
-        assert_eq!(normalize_pin("iLoO-0003").as_deref(), Some(canonical));
-        assert_eq!(format_pin(canonical), "1100-0003");
+        let canonical = "A11000000F";
+        assert_eq!(normalize_pin("aiioo-ooooF").as_deref(), Some(canonical));
+        assert_eq!(format_pin(canonical), "A1100-0000F");
     }
 
     #[test]
     fn normalization_rejects_bad_checksum() {
-        let pin = generate_pin();
+        let pin = generate_pin(PinMode::Normal);
         let replacement = if pin.ends_with('0') { '1' } else { '0' };
         let invalid = format!("{}{replacement}", &pin[..PIN_DATA_LEN]);
         assert!(normalize_pin(&invalid).is_none());
@@ -139,8 +170,16 @@ mod tests {
     }
 
     #[test]
+    fn normalization_rejects_unknown_mode_marker() {
+        let mut pin = "C12345678".to_string();
+        pin.push(check_char(pin.as_bytes()) as char);
+        assert!(normalize_pin(&pin).is_none());
+        assert!(looks_like_pin(&pin));
+    }
+
+    #[test]
     fn rendezvous_derivation_is_bucketed() {
-        let pin = generate_pin();
+        let pin = generate_pin(PinMode::Normal);
         assert_eq!(
             derive_key_material(&pin, 42).unwrap(),
             derive_key_material(&pin, 42).unwrap()

@@ -11,6 +11,7 @@ use super::common::{
 };
 use crate::cli::instructions::print_receiver_command;
 use crate::auth::PairingAuth;
+use crate::auth::pin::PinMode;
 use crate::auth::rendezvous::PinChannel;
 use crate::auth::spake2::handshake_as_responder;
 use beam_rs::core::crypto::generate_key;
@@ -132,7 +133,11 @@ async fn transfer_data_internal(
             })
         }
         PairingMode::Pin(channel) => {
-            let pin = crate::auth::pin::generate_pin();
+            let pin_mode = match channel {
+                PinChannel::NostrAndLan => PinMode::Normal,
+                PinChannel::LanOnly => PinMode::Serverless,
+            };
+            let pin = crate::auth::pin::generate_pin(pin_mode);
             let bucket = crate::auth::pin::current_bucket();
             let keys = tokio::task::spawn_blocking({
                 let pin = pin.clone();
@@ -166,12 +171,7 @@ async fn transfer_data_internal(
                     }
                 }));
             }
-            let receiver_command = if channel == PinChannel::LanOnly {
-                "beam-rs receive --serverless"
-            } else {
-                "beam-rs receive"
-            };
-            print_receiver_command(receiver_command);
+            print_receiver_command("beam-rs receive");
             ui::show_pin(&crate::auth::pin::format_pin(&pin));
             ui::info("This PIN is valid for 60 seconds and will not refresh.\n");
             pin_deadline = Some(

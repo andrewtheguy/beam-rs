@@ -99,8 +99,9 @@ beam-rs receive
 ```
 
 The sender advertises only its encrypted ephemeral node ID, never a beam code or
-content key. The receiver races Nostr and mDNS lookups, so same-LAN pairing can
-still work without internet. The displayed `XXXX-XXXX` PIN is valid for one
+content key. An `A` at the start of the ten-character PIN tells the receiver to
+race Nostr and mDNS lookups, so same-LAN pairing can still work without
+internet. The displayed `AXXXX-XXXXX` PIN is valid for one
 60-second window. If no receiver starts connecting, the sender exits instead of
 refreshing it.
 
@@ -129,12 +130,14 @@ beam-rs receive
 
 # Same serverless transport, but exchange only a short PIN over mDNS
 beam-rs send --serverless --pin /path/to/file
-beam-rs receive --serverless
+beam-rs receive
 ```
 
 `--serverless --pin` publishes no payload or secret: mDNS carries an encrypted
 node-ID rendezvous record, and SPAKE2 authenticates the PIN in-band. The sender
-uses one PIN for 60 seconds and exits if nobody connects; it does not refresh.
+uses a `BXXXX-XXXXX` PIN so the receiver automatically disables Nostr, iroh
+relays, and internet-backed DNS. It uses one PIN for 60 seconds and exits if
+nobody connects; it does not refresh.
 `--serverless` cannot be combined with `--relay-url` because relays are disabled.
 
 ### 4. Tor Mode - `send --tor`
@@ -148,12 +151,13 @@ beam-rs send --tor /path/to/file
 ### Receiving
 
 `beam-rs receive` handles iroh, serverless, Tor, and PIN inputs. Serverless beam
-codes are auto-detected; use `receive --serverless` when entering a
-PIN created by `send --serverless --pin` so the receiver also stays LAN-only.
+codes are auto-detected. PINs beginning with `A` use normal Nostr+LAN discovery;
+PINs beginning with `B` automatically use LAN-only discovery with relays and
+internet-backed DNS disabled.
 
 ```bash
 beam-rs receive
-# Prompts for a beam code or 8-character PIN.
+# Prompts for a beam code or 10-character PIN.
 
 # Optional output directory
 beam-rs receive --output /path/to/downloads
@@ -177,7 +181,7 @@ For protocol details and wire formats, see [ARCHITECTURE.md](docs/ARCHITECTURE.m
 All modes provide end-to-end encryption.
 - **Default iroh and Tor**: The beam code carries the key/address information.
 - **Serverless**: The copied beam code carries a 256-bit session secret and direct address hints; SPAKE2 derives the content-encryption key.
-- **PIN mode (`send --pin`)**: Nostr and mDNS carry only an encrypted ephemeral node ID. After connection, SPAKE2 proves PIN possession and derives the content-encryption key. `--serverless --pin` limits discovery to mDNS and disables relays/DNS.
+- **PIN mode (`send --pin`)**: Nostr and mDNS carry only an encrypted ephemeral node ID. After connection, SPAKE2 proves PIN possession and derives the content-encryption key. The leading `A` selects normal discovery; `--serverless --pin` emits a leading `B`, which makes the receiver limit discovery to mDNS and disable relays/DNS automatically.
 
 | Mode | Type | Key Exchange | Transport Encryption | Content Encryption |
 |------|------|--------------|---------------------|-------------------|

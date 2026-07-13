@@ -73,9 +73,10 @@ payload's secret; the derived key encrypts the application protocol.
 
 With `--serverless --pin`, no long payload is copied. The sender advertises the
 same encrypted PIN rendezvous record used by normal PIN mode, but only through
-mDNS. The receiver must use `receive --serverless`; this keeps its endpoint
-relayless and mDNS-only as well. The one displayed PIN expires after 60 seconds,
-at which point the sender exits rather than rotating it.
+mDNS. Its PIN starts with `B`, so the receiver selects LAN-only discovery and a
+relayless, mDNS-only endpoint before doing any lookup. The one displayed PIN
+expires after 60 seconds, at which point the sender exits rather than rotating
+it.
 
 ```mermaid
 sequenceDiagram
@@ -155,7 +156,7 @@ sequenceDiagram
 - **Transport**: QUIC / TLS 1.3 (same as iroh mode)
 - **Discovery**: Direct addresses embedded in the serverless payload, with mDNS as a fallback; relays and n0 DNS/pkarr are disabled.
 - **Key Exchange**: The pasted payload carries a fresh 256-bit session secret; SPAKE2 derives the AES key in-band.
-- **PIN Support**: Yes via `send --serverless --pin` and `receive --serverless`. The encrypted node-ID record is advertised over mDNS only; no long code is copied.
+- **PIN Support**: Yes via `send --serverless --pin` and a normal `receive` command. The leading `B` selects LAN-only receiver behavior; the encrypted node-ID record is advertised over mDNS only and no long code is copied.
 - **Encryption**: AES-256-GCM with a SPAKE2-derived key, plus QUIC/TLS encryption.
 - **Reachability**: Primarily intended for the same LAN. Embedded public/port-mapped addresses can permit a direct WAN path, but NAT/firewalls commonly prevent it. Incompatible with `--relay-url`.
 
@@ -183,12 +184,13 @@ Default Iroh mode uses two encryption layers for defense in depth:
 ### PIN-based Key Exchange (PIN Mode)
 
 PIN mode is available through `beam-rs send --pin`; adding `--serverless`
-selects LAN-only PIN discovery.
+selects LAN-only PIN discovery. The sender encodes that choice in the PIN so the
+receiver needs no mode flag.
 
-- **Format**: Eight uppercase Crockford-base32 characters, grouped `XXXX-XXXX`. Seven characters are random (~35 bits); the last is a position-weighted check character. Input is case-insensitive and maps common lookalikes.
+- **Format**: Ten uppercase characters grouped `XXXXX-XXXXX`. The first byte is `A` for normal PIN mode or `B` for serverless PIN mode, followed by eight random Crockford-base32 characters (~40 bits) and a position-weighted check character. Input is case-insensitive and maps common lookalikes.
 - **Record key**: Argon2id derives a Nostr keypair from the canonical PIN and current 60-second wall-clock bucket using 64 MiB, three passes, and one lane. Receivers derive candidates for the current, previous, and next buckets.
 - **Record content**: NIP-44 self-encryption protects a JSON payload containing only the sender's ephemeral iroh node ID. The derived public key is the lookup key on both Nostr and mDNS. No transfer key or reusable credential is published.
-- **Channels**: Default PIN mode races a stored Nostr record and a `_beam-rs-pin._udp.local.` mDNS record. Serverless PIN mode uses only mDNS and relayless endpoints.
+- **Channels**: An `A` PIN races a stored Nostr record and a `_beam-rs-pin._udp.local.` mDNS record, then creates a relay-capable receiver endpoint. A `B` PIN performs only the mDNS query and creates an endpoint with iroh relays and internet DNS/pkarr disabled.
 - **Lifetime**: The Nostr event expires after 60 seconds and the mDNS advertisement is withdrawn when the process exits. The sender displays one PIN and exits after 60 seconds if no receiver starts connecting.
 - **Authentication and key derivation**: The PIN is the SPAKE2 password. The sender's node ID is used as the session context and validated during the handshake. The SPAKE2 result becomes the AES-256-GCM content key.
 - **Security**: SPAKE2 prevents a passive transcript from becoming an offline PIN verifier. The public PIN-derived rendezvous record can still be tested offline, so its Argon2id cost and short lifetime are important mitigations.

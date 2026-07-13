@@ -96,7 +96,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn advertised_record_can_be_found() {
-        let pin = "K7P29QXM";
+        let pin = "BK7P29QXMV";
         let node_id = iroh::SecretKey::generate().public();
         let candidates = pin_record::candidate_keys(pin).await.unwrap();
         let _advert = advertise_pin_record(

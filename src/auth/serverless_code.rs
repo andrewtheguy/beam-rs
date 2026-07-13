@@ -92,6 +92,7 @@ mod tests {
             .with_ip_addr("[2001:db8::1]:4433".parse().unwrap());
         let secret = [42u8; 32];
         let code = encode(&addr, &secret).unwrap();
+        assert!(code.starts_with("ey"));
         let decoded = decode(&code).unwrap().unwrap();
         assert_eq!(decoded.addr.id, node_id);
         assert_eq!(decoded.secret, URL_SAFE_NO_PAD.encode(secret));

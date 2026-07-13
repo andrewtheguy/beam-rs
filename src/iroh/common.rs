@@ -483,6 +483,7 @@ mod tests {
             .with_ip_addr("192.168.1.10:4444".parse().unwrap());
 
         let code = generate_code(&addr, &key, &[]).unwrap();
+        assert!(code.starts_with("ey"));
         let token = parse_code(&code).unwrap();
         let minimal_addr = token.addr.unwrap();
 
