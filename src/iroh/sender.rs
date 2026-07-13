@@ -28,6 +28,8 @@ pub enum PairingMode {
     Serverless,
 }
 
+const PIN_COUNTDOWN_INTERVAL_SECS: u64 = 10;
+
 /// QUIC application close codes for connection termination.
 ///
 /// These codes are sent to the peer when closing the connection to indicate
@@ -191,7 +193,22 @@ async fn transfer_data_internal(
     ui::status("Waiting for receiver to connect...");
 
     let incoming = if let Some(deadline) = pin_deadline {
-        match tokio::time::timeout_at(deadline, endpoint.accept()).await {
+        let countdown_task = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(PIN_COUNTDOWN_INTERVAL_SECS));
+            interval.tick().await;
+            let mut seconds_remaining = crate::auth::pin::PIN_LIFETIME_SECS;
+            while seconds_remaining > PIN_COUNTDOWN_INTERVAL_SECS {
+                interval.tick().await;
+                seconds_remaining -= PIN_COUNTDOWN_INTERVAL_SECS;
+                ui::transient_status(&format!("PIN expires in {seconds_remaining} seconds..."));
+            }
+        });
+        let result = tokio::time::timeout_at(deadline, endpoint.accept()).await;
+        countdown_task.abort();
+        let _ = countdown_task.await;
+        ui::transient_status("");
+        match result {
             Ok(Some(incoming)) => incoming,
             Ok(None) => anyhow::bail!("Sender endpoint closed while waiting for a receiver"),
             Err(_) => {
