@@ -124,8 +124,8 @@ async fn transfer_data_internal(
                 secret_bytes,
             );
             print_receiver_command("beam-rs receive");
-            ui::show_serverless_code(&code);
-            ui::info("Then paste the serverless code when prompted.\n");
+            ui::show_code(&code);
+            ui::info("Then paste the beam code when prompted.\n");
             Some(PairingAuth {
                 secret,
                 session_id: addr.id.to_string(),

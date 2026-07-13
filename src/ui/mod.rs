@@ -61,11 +61,6 @@ pub fn show_pin(pin: &str) {
     println!("🔢 PIN: {}\n", pin);
 }
 
-/// Display the sender's copy/paste serverless pairing code.
-pub fn show_serverless_code(code: &str) {
-    println!("🔗 Serverless code:\n{}\n", code);
-}
-
 /// Ask how to handle an existing destination file.
 pub fn prompt_file_exists(path: &Path) -> Result<FileExistsChoice> {
     print!(

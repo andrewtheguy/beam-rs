@@ -1,4 +1,4 @@
-//! Serverless pairing codes carry an ephemeral iroh node ID, discovered direct IP
+//! Serverless beam codes carry an ephemeral iroh node ID, discovered direct IP
 //! addresses, and a fresh session secret. Nothing is published through a
 //! signaling service; the user carries the entire payload to the receiver.
 
@@ -7,13 +7,14 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 
-const CODE_PREFIX: &str = "serverless:";
 const SERVERLESS_CODE_VERSION: u8 = 1;
+const PROTOCOL_SERVERLESS: &str = "iroh-serverless";
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerlessPayload {
     version: u8,
+    protocol: String,
     node_id: String,
     secret: String,
     ip_addrs: Vec<String>,
@@ -27,26 +28,30 @@ pub struct ServerlessTarget {
 pub fn encode(addr: &EndpointAddr, secret: &[u8; 32]) -> Result<String> {
     let payload = ServerlessPayload {
         version: SERVERLESS_CODE_VERSION,
+        protocol: PROTOCOL_SERVERLESS.to_string(),
         node_id: addr.id.to_string(),
         secret: URL_SAFE_NO_PAD.encode(secret),
         ip_addrs: addr.ip_addrs().map(ToString::to_string).collect(),
     };
-    let payload = serde_json::to_vec(&payload).context("serializing serverless pairing code")?;
-    Ok(format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(payload)))
+    let payload = serde_json::to_vec(&payload).context("serializing serverless beam code")?;
+    Ok(URL_SAFE_NO_PAD.encode(payload))
 }
 
 pub fn decode(input: &str) -> Result<Option<ServerlessTarget>> {
-    let Some(encoded) = input.trim().strip_prefix(CODE_PREFIX) else {
+    let Ok(payload) = URL_SAFE_NO_PAD.decode(input.trim()) else {
         return Ok(None);
     };
-    let payload = URL_SAFE_NO_PAD
-        .decode(encoded)
-        .context("serverless pairing code is not valid base64url")?;
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) else {
+        return Ok(None);
+    };
+    if value.get("protocol").and_then(serde_json::Value::as_str) != Some(PROTOCOL_SERVERLESS) {
+        return Ok(None);
+    }
     let payload: ServerlessPayload =
-        serde_json::from_slice(&payload).context("serverless pairing code has an invalid payload")?;
+        serde_json::from_slice(&payload).context("serverless beam code has an invalid payload")?;
     if payload.version != SERVERLESS_CODE_VERSION {
         anyhow::bail!(
-            "unsupported serverless pairing code version {} (expected {})",
+            "unsupported serverless beam code version {} (expected {})",
             payload.version,
             SERVERLESS_CODE_VERSION
         );
@@ -54,19 +59,19 @@ pub fn decode(input: &str) -> Result<Option<ServerlessTarget>> {
     let node_id: EndpointId = payload
         .node_id
         .parse()
-        .context("serverless pairing code has an invalid node ID")?;
+        .context("serverless beam code has an invalid node ID")?;
     let secret_bytes = URL_SAFE_NO_PAD
         .decode(&payload.secret)
-        .context("serverless pairing code has an invalid session secret")?;
+        .context("serverless beam code has an invalid session secret")?;
     if secret_bytes.len() != 32 {
-        anyhow::bail!("serverless pairing code has an invalid session secret length");
+        anyhow::bail!("serverless beam code has an invalid session secret length");
     }
     let mut addr = EndpointAddr::new(node_id);
     for ip_addr in payload.ip_addrs {
         addr = addr.with_ip_addr(
             ip_addr
                 .parse()
-                .with_context(|| format!("serverless pairing code has invalid address {ip_addr}"))?,
+                .with_context(|| format!("serverless beam code has invalid address {ip_addr}"))?,
         );
     }
     Ok(Some(ServerlessTarget {
@@ -96,11 +101,24 @@ mod tests {
 
     #[test]
     fn non_serverless_input_is_not_claimed() {
-        assert!(decode("ordinary-beam-code").unwrap().is_none());
+        let payload = serde_json::json!({
+            "version": 5,
+            "protocol": "iroh"
+        });
+        let code = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        assert!(decode(&code).unwrap().is_none());
     }
 
     #[test]
     fn malformed_serverless_code_is_rejected() {
-        assert!(decode("serverless:not-base64!").is_err());
+        let payload = serde_json::json!({
+            "version": SERVERLESS_CODE_VERSION,
+            "protocol": PROTOCOL_SERVERLESS,
+            "node_id": "not-a-node-id",
+            "secret": "not-a-secret",
+            "ip_addrs": []
+        });
+        let code = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        assert!(decode(&code).is_err());
     }
 }

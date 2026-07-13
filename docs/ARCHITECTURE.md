@@ -65,7 +65,7 @@ sequenceDiagram
 Serverless mode is for transfers without any third-party server. Both endpoints
 use `RelayMode::Disabled`, omit n0 DNS/pkarr publishing and lookup, and retain
 only iroh's mDNS address lookup. Before printing the code, the sender waits for
-a direct address. The `serverless:` payload contains a schema version, endpoint
+a direct address. The serverless beam payload contains a schema version, endpoint
 ID, fresh 256-bit session secret, and every discovered direct socket address.
 The receiver constructs its target from those embedded addresses, while mDNS
 continues as a fallback. After connecting, both sides run SPAKE2 with the
@@ -84,10 +84,10 @@ sequenceDiagram
 
     Sender->>Sender: 1. Bind iroh endpoint (RelayMode::Disabled)
     Sender->>Sender: 2. Wait briefly for direct address discovery
-    Sender->>Sender: 3. Print serverless code
+    Sender->>Sender: 3. Print beam code
     Note over Sender: Code has endpoint ID + 256-bit secret + discovered direct addresses
 
-    Note over Sender: User shares serverless code out-of-band
+    Note over Sender: User shares beam code out-of-band
 
     Receiver->>Receiver: 4. Parse serverless payload
     Receiver->>Sender: 5. Connect directly to embedded IPs (mDNS fallback) over QUIC (ALPN beam-transfer/1)

@@ -110,7 +110,7 @@ refreshing it.
 
 Use this mode to transfer without any third-party server (no iroh relay, Nostr,
 or internet-backed DNS discovery). It uses iroh with relays disabled and prints
-a self-contained `serverless:` code carrying the ephemeral node ID, a fresh
+a self-contained beam code carrying the ephemeral node ID, a fresh
 256-bit session secret, and every direct address discovered before the code is
 printed. The receiver tries those addresses immediately and retains mDNS as a
 fallback. The embedded addresses make the mode more robust on networks where
@@ -124,7 +124,7 @@ beam-rs send --serverless /path/to/file
 # Send folder without a server
 beam-rs send --serverless /path/to/folder --folder
 
-# Receive (paste the printed serverless code; it is auto-detected)
+# Receive (paste the printed beam code; it is auto-detected)
 beam-rs receive
 
 # Same serverless transport, but exchange only a short PIN over mDNS
@@ -147,13 +147,13 @@ beam-rs send --tor /path/to/file
 
 ### Receiving
 
-`beam-rs receive` handles iroh, serverless, Tor, and PIN inputs. Serverless
-copy/paste codes are auto-detected; use `receive --serverless` when entering a
+`beam-rs receive` handles iroh, serverless, Tor, and PIN inputs. Serverless beam
+codes are auto-detected; use `receive --serverless` when entering a
 PIN created by `send --serverless --pin` so the receiver also stays LAN-only.
 
 ```bash
 beam-rs receive
-# Prompts for a beam code, 8-character PIN, or serverless code.
+# Prompts for a beam code or 8-character PIN.
 
 # Optional output directory
 beam-rs receive --output /path/to/downloads
@@ -176,7 +176,7 @@ For protocol details and wire formats, see [ARCHITECTURE.md](docs/ARCHITECTURE.m
 
 All modes provide end-to-end encryption.
 - **Default iroh and Tor**: The beam code carries the key/address information.
-- **Serverless**: The copied serverless code carries a 256-bit session secret and direct address hints; SPAKE2 derives the content-encryption key.
+- **Serverless**: The copied beam code carries a 256-bit session secret and direct address hints; SPAKE2 derives the content-encryption key.
 - **PIN mode (`send --pin`)**: Nostr and mDNS carry only an encrypted ephemeral node ID. After connection, SPAKE2 proves PIN possession and derives the content-encryption key. `--serverless --pin` limits discovery to mDNS and disables relays/DNS.
 
 | Mode | Type | Key Exchange | Transport Encryption | Content Encryption |

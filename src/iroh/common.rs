@@ -328,7 +328,7 @@ pub async fn wait_for_direct_address_hint(endpoint: &Endpoint) {
         .is_err()
     {
         eprintln!(
-            "Warning: no direct address was discovered within {}s; the serverless code will rely on mDNS.",
+            "Warning: no direct address was discovered within {}s; the beam code will rely on mDNS.",
             ENDPOINT_READY_TIMEOUT.as_secs()
         );
     }

@@ -59,7 +59,7 @@ enum Commands {
         tor: bool,
     },
 
-    /// Receive a file or folder using a beam code, PIN, or serverless code
+    /// Receive a file or folder using a beam code or PIN
     Receive {
         /// Output directory (default: current directory)
         #[arg(short, long)]
@@ -157,12 +157,12 @@ fn init_tracing() {
         .init();
 }
 
-/// Prompt for a beam code, PIN, or serverless code, re-prompting on empty input.
+/// Prompt for a beam code or PIN, re-prompting on empty input.
 ///
 fn prompt_pairing_input() -> Result<String> {
     let mut initial = String::new();
     loop {
-        let input = ui::prompt_line("Enter beam code, PIN, or serverless code: ", &initial)?
+        let input = ui::prompt_line("Enter beam code or PIN: ", &initial)?
             .trim()
             .to_string();
 
@@ -284,7 +284,7 @@ async fn run(command: Commands) -> Result<()> {
                 .await?;
             } else {
                 if serverless {
-                    anyhow::bail!("--serverless requires a PIN or serverless code as input");
+                    anyhow::bail!("--serverless requires a beam code or PIN as input");
                 }
                 receive_with_code(&input, output, no_resume).await?;
             }
