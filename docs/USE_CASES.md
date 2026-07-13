@@ -88,8 +88,8 @@ The PIN lasts 120 seconds and does not refresh.
   beam-rs send /path/to/file
   ```
 
-**Solution B**: **Tor Mode** (for anonymity)
-- **Why**: When you need anonymous transfers where neither party's IP is revealed. Uses Tor hidden services.
+**Solution B**: **Tor Mode**
+- **Why**: Tor can help when direct QUIC/UDP and iroh relays are blocked but the network still permits Tor to bootstrap. It routes the transfer through a hidden service and also prevents either peer from learning the other's IP, though it is typically slower and may itself be blocked on some restricted networks.
 - **Command**:
   ```bash
   beam-rs send --tor /path/to/file
@@ -123,7 +123,7 @@ The PIN lasts 120 seconds and does not refresh.
 ## 7. Self-Hosted Infrastructure (Zero Third-Party Dependency)
 **Scenario**: You require complete control over the network infrastructure and cannot rely on public relays due to policy or privacy concerns.
 
-**Solution A**: **Default Iroh mode + Custom DERP Relays** (Recommended)
+**Solution A**: **Default Iroh mode + Custom DERP Relays** (Advanced)
 - **Why**: iroh allows you to run your own relay. By pointing `beam-rs` to your own infrastructure, you avoid public third-party relays; iroh still attempts direct P2P first and uses your relay as fallback if needed.
 - **Resources**: Implementation for the relay server is available in the [iroh repository](https://github.com/n0-computer/iroh).
 - **Command**:
@@ -133,8 +133,8 @@ The PIN lasts 120 seconds and does not refresh.
   The relay is embedded in the beam code, so the receiver adopts it
   automatically — just run `beam-rs receive`, no relay flag needed.
 
-**Solution B**: **Serverless Mode** (No third-party server)
-- **Why**: Relays and internet discovery are disabled; the sender's discovered direct addresses are embedded in the beam code, with mDNS as a fallback. Works completely offline on a shared LAN. Add `--pin` on both commands when a short code is preferable to copy/paste.
+**Solution B**: **Serverless Mode** (Recommended, lowest complexity)
+- **Why**: This is the simplest option because there is no relay or other service to deploy or maintain. Relays and internet discovery are disabled; the sender's discovered direct addresses are embedded in the beam code, with mDNS as a fallback. It works completely offline on a shared LAN. Add `--pin` only to the sender command when a short code is preferable to copy/paste; the receiver remains `beam-rs receive`.
 - **Command**:
   ```bash
   beam-rs send --serverless /path/to/file
