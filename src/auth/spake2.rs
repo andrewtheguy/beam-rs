@@ -5,6 +5,7 @@
 //! an attacker who captures the network traffic cannot brute-force the passphrase offline.
 
 use anyhow::{Context, Result};
+use beam_rs::core::crypto;
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -13,10 +14,14 @@ const SPAKE2_MSG_LEN: usize = 33;
 
 /// Maximum session ID length (enforced by both initiator and responder)
 const MAX_SESSION_ID_LEN: usize = 256;
+const MAX_CLIENT_ID_LEN: usize = 256;
+const MAX_CONFIRMATION_LEN: usize = 128;
 
 /// Identity string for beam protocol (used in SPAKE2 derivation)
 const IDENTITY_SENDER: &[u8] = b"beam-rs-sender";
 const IDENTITY_RECEIVER: &[u8] = b"beam-rs-receiver";
+const CONFIRM_SENDER: &[u8] = b"beam-rs-sender-confirm-v1";
+const CONFIRM_RECEIVER: &[u8] = b"beam-rs-receiver-confirm-v1";
 
 /// Constant-time comparison of two byte slices.
 ///
@@ -37,20 +42,67 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     result == 0
 }
 
+async fn send_confirmation<S>(stream: &mut S, key: &[u8; 32], message: &[u8]) -> Result<()>
+where
+    S: AsyncWriteExt + Unpin,
+{
+    let encrypted = crypto::encrypt(key, message).context("Failed to encrypt key confirmation")?;
+    let len = u16::try_from(encrypted.len()).context("Key confirmation is too long")?;
+    stream
+        .write_all(&len.to_be_bytes())
+        .await
+        .context("Failed to send key confirmation length")?;
+    stream
+        .write_all(&encrypted)
+        .await
+        .context("Failed to send key confirmation")
+}
+
+async fn receive_confirmation<S>(
+    stream: &mut S,
+    key: &[u8; 32],
+    expected: &[u8],
+) -> Result<()>
+where
+    S: AsyncReadExt + Unpin,
+{
+    let mut len_buf = [0u8; 2];
+    stream
+        .read_exact(&mut len_buf)
+        .await
+        .context("Failed to read key confirmation length")?;
+    let len = u16::from_be_bytes(len_buf) as usize;
+    if len > MAX_CONFIRMATION_LEN {
+        anyhow::bail!("Key confirmation is too long");
+    }
+    let mut encrypted = vec![0u8; len];
+    stream
+        .read_exact(&mut encrypted)
+        .await
+        .context("Failed to read key confirmation")?;
+    let confirmation = crypto::decrypt(key, &encrypted)
+        .context("Peer did not prove possession of the pairing secret")?;
+    if !constant_time_eq(&confirmation, expected) {
+        anyhow::bail!("Invalid key confirmation");
+    }
+    Ok(())
+}
+
 /// Perform SPAKE2 handshake as initiator (receiver role in paired modes).
 ///
 /// The receiver connects first and sends their SPAKE2 message along with
 /// the session ID, then receives the sender's SPAKE2 message.
 ///
 /// # Protocol
-/// 1. Send: session_id_len (2 bytes) + session_id + spake2_msg (33 bytes)
-/// 2. Receive: spake2_msg (33 bytes)
-/// 3. Derive shared key
+/// 1. Send: session ID, the receiver's iroh endpoint ID, and the SPAKE2 message
+/// 2. Receive the sender's SPAKE2 message and key confirmation
+/// 3. Confirm the derived key back to the sender
 ///
 /// # Arguments
 /// * `stream` - TCP stream to sender
 /// * `secret` - PIN or copied serverless session secret
 /// * `session_id` - Sender node ID for this session
+/// * `client_id` - Receiver node ID authenticated by the iroh connection
 ///
 /// # Returns
 /// 32-byte shared encryption key
@@ -58,6 +110,7 @@ pub async fn handshake_as_initiator<S>(
     stream: &mut S,
     secret: &str,
     session_id: &str,
+    client_id: &str,
 ) -> Result<[u8; 32]>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
@@ -69,7 +122,9 @@ where
         &Identity::new(IDENTITY_SENDER),
     );
 
-    // Send: session_id_len (2 bytes BE) + session_id + spake2_msg (33 bytes)
+    // Send both endpoint identities before the SPAKE2 message. The sender validates
+    // client_id against Connection::remote_id(), binding secret possession to the
+    // cryptographically authenticated iroh peer.
     let session_id_bytes = session_id.as_bytes();
     if session_id_bytes.len() > MAX_SESSION_ID_LEN {
         anyhow::bail!(
@@ -78,9 +133,21 @@ where
             MAX_SESSION_ID_LEN
         );
     }
-    let mut msg = Vec::with_capacity(2 + session_id_bytes.len() + SPAKE2_MSG_LEN);
+    let client_id_bytes = client_id.as_bytes();
+    if client_id_bytes.len() > MAX_CLIENT_ID_LEN {
+        anyhow::bail!(
+            "Client ID too long: {} bytes (max: {})",
+            client_id_bytes.len(),
+            MAX_CLIENT_ID_LEN
+        );
+    }
+    let mut msg = Vec::with_capacity(
+        4 + session_id_bytes.len() + client_id_bytes.len() + SPAKE2_MSG_LEN,
+    );
     msg.extend_from_slice(&(session_id_bytes.len() as u16).to_be_bytes());
     msg.extend_from_slice(session_id_bytes);
+    msg.extend_from_slice(&(client_id_bytes.len() as u16).to_be_bytes());
+    msg.extend_from_slice(client_id_bytes);
     msg.extend_from_slice(&outbound_msg);
 
     stream
@@ -105,6 +172,8 @@ where
         anyhow::bail!("Unexpected key length: {} (expected 32)", key_bytes.len());
     }
     key.copy_from_slice(&key_bytes);
+    receive_confirmation(stream, &key, CONFIRM_SENDER).await?;
+    send_confirmation(stream, &key, CONFIRM_RECEIVER).await?;
     Ok(key)
 }
 
@@ -114,15 +183,15 @@ where
 /// then responds with their own SPAKE2 message.
 ///
 /// # Protocol
-/// 1. Receive: session_id_len (2 bytes) + session_id + spake2_msg (33 bytes)
-/// 2. Validate session_id
-/// 3. Send: spake2_msg (33 bytes)
-/// 4. Derive shared key
+/// 1. Receive and validate the session ID and claimed receiver endpoint ID
+/// 2. Receive the SPAKE2 message and derive the shared key
+/// 3. Exchange key confirmations before authorizing the receiver
 ///
 /// # Arguments
 /// * `stream` - TCP stream from receiver
 /// * `secret` - PIN or copied serverless session secret
 /// * `expected_session_id` - Expected sender node ID
+/// * `expected_client_id` - Client ID returned by the iroh connection
 ///
 /// # Returns
 /// 32-byte shared encryption key
@@ -130,6 +199,7 @@ pub async fn handshake_as_responder<S>(
     stream: &mut S,
     secret: &str,
     expected_session_id: &str,
+    expected_client_id: &str,
 ) -> Result<[u8; 32]>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
@@ -163,6 +233,28 @@ where
         anyhow::bail!("Session ID mismatch");
     }
 
+    let mut len_buf = [0u8; 2];
+    stream
+        .read_exact(&mut len_buf)
+        .await
+        .context("Failed to read client ID length")?;
+    let client_id_len = u16::from_be_bytes(len_buf) as usize;
+    if client_id_len > MAX_CLIENT_ID_LEN {
+        anyhow::bail!(
+            "Client ID too long: {} bytes (max: {})",
+            client_id_len,
+            MAX_CLIENT_ID_LEN
+        );
+    }
+    let mut client_id_buf = vec![0u8; client_id_len];
+    stream
+        .read_exact(&mut client_id_buf)
+        .await
+        .context("Failed to read client ID")?;
+    if !constant_time_eq(&client_id_buf, expected_client_id.as_bytes()) {
+        anyhow::bail!("Client ID is not authorized for this connection");
+    }
+
     // Receive peer's SPAKE2 message
     let mut peer_msg = [0u8; SPAKE2_MSG_LEN];
     stream
@@ -194,6 +286,8 @@ where
         anyhow::bail!("Unexpected key length: {} (expected 32)", key_bytes.len());
     }
     key.copy_from_slice(&key_bytes);
+    send_confirmation(stream, &key, CONFIRM_SENDER).await?;
+    receive_confirmation(stream, &key, CONFIRM_RECEIVER).await?;
     Ok(key)
 }
 
@@ -207,16 +301,15 @@ mod tests {
         let (mut client, mut server) = duplex(1024);
         let secret = "test-pin-1234";
         let session_id = "abc123def456";
+        let client_id = "receiver-node-id";
 
-        let client_handle =
-            tokio::spawn(
-                async move { handshake_as_initiator(&mut client, secret, session_id).await },
-            );
+        let client_handle = tokio::spawn(async move {
+            handshake_as_initiator(&mut client, secret, session_id, client_id).await
+        });
 
-        let server_handle =
-            tokio::spawn(
-                async move { handshake_as_responder(&mut server, secret, session_id).await },
-            );
+        let server_handle = tokio::spawn(async move {
+            handshake_as_responder(&mut server, secret, session_id, client_id).await
+        });
 
         let (client_result, server_result) = tokio::join!(client_handle, server_handle);
         let client_key = client_result.unwrap().unwrap();
@@ -231,24 +324,19 @@ mod tests {
     async fn test_handshake_wrong_pin() {
         let (mut client, mut server) = duplex(1024);
         let session_id = "abc123def456";
+        let client_id = "receiver-node-id";
 
-        let client_handle =
-            tokio::spawn(
-                async move { handshake_as_initiator(&mut client, "pin1", session_id).await },
-            );
+        let client_handle = tokio::spawn(async move {
+            handshake_as_initiator(&mut client, "pin1", session_id, client_id).await
+        });
 
-        let server_handle =
-            tokio::spawn(
-                async move { handshake_as_responder(&mut server, "pin2", session_id).await },
-            );
+        let server_handle = tokio::spawn(async move {
+            handshake_as_responder(&mut server, "pin2", session_id, client_id).await
+        });
 
         let (client_result, server_result) = tokio::join!(client_handle, server_handle);
-        let client_key = client_result.unwrap().unwrap();
-        let server_key = server_result.unwrap().unwrap();
-
-        // Keys should be different with wrong PIN
-        // (actual failure happens when trying to decrypt data)
-        assert_ne!(client_key, server_key);
+        assert!(client_result.unwrap().is_err());
+        assert!(server_result.unwrap().is_err());
     }
 
     #[tokio::test]
@@ -256,15 +344,13 @@ mod tests {
         let (mut client, mut server) = duplex(1024);
         let pin = "same-pin";
 
-        let client_handle =
-            tokio::spawn(
-                async move { handshake_as_initiator(&mut client, pin, "transfer-1").await },
-            );
+        let client_handle = tokio::spawn(async move {
+            handshake_as_initiator(&mut client, pin, "transfer-1", "receiver-node-id").await
+        });
 
-        let server_handle =
-            tokio::spawn(
-                async move { handshake_as_responder(&mut server, pin, "transfer-2").await },
-            );
+        let server_handle = tokio::spawn(async move {
+            handshake_as_responder(&mut server, pin, "transfer-2", "receiver-node-id").await
+        });
 
         let (client_result, server_result) = tokio::join!(client_handle, server_handle);
 
@@ -287,5 +373,34 @@ mod tests {
         // Client may fail too (connection closed by server) or succeed (timing dependent)
         // The important thing is the server rejected the mismatched session ID
         let _ = client_result;
+    }
+
+    #[tokio::test]
+    async fn test_handshake_rejects_client_id_not_matching_iroh_peer() {
+        let (mut client, mut server) = duplex(1024);
+
+        let client_handle = tokio::spawn(async move {
+            handshake_as_initiator(
+                &mut client,
+                "same-secret",
+                "sender-node-id",
+                "claimed-client-id",
+            )
+            .await
+        });
+        let server_handle = tokio::spawn(async move {
+            handshake_as_responder(
+                &mut server,
+                "same-secret",
+                "sender-node-id",
+                "authenticated-iroh-client-id",
+            )
+            .await
+        });
+
+        let (client_result, server_result) = tokio::join!(client_handle, server_handle);
+        assert!(client_result.unwrap().is_err());
+        let error = server_result.unwrap().unwrap_err().to_string();
+        assert!(error.contains("Client ID is not authorized"), "{error}");
     }
 }

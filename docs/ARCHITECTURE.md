@@ -29,7 +29,7 @@ sequenceDiagram
     Sender->>Relay: 2. Connect to Home Relay
 
     Sender->>Sender: 3. Generate beam code
-    Note over Sender: Code = base64url(JSON token: version, protocol, created_at, AES_key, minimal addr)
+    Note over Sender: Code = base64url(JSON token: version, protocol, created_at, session secret, minimal addr)
     Note over Sender: Minimal addr = NodeID + selected relay URL + optional custom relay list
 
     Receiver->>Receiver: 4. Parse Code -> NodeAddr
@@ -42,14 +42,17 @@ sequenceDiagram
 
     Note over Sender,Receiver: iroh selects best path (Direct > Relay)
 
-    Sender->>Receiver: 6. Handshake (ALPN "beam-transfer/1")
-    Sender->>Receiver: 7. Send Encrypted Header (AES-256-GCM)
+    Sender->>Receiver: 6. QUIC handshake (ALPN "beam-transfer/2")
+    Receiver->>Sender: 7. SPAKE2 proof + authenticated receiver NodeID
+    Note over Sender: Compare claimed NodeID with Connection::remote_id(); reject mismatches
+    Sender->>Receiver: 8. Mutual key confirmation
+    Sender->>Receiver: 9. Send Encrypted Header (AES-256-GCM)
     Note over Receiver: Check file existence, prompt user
 
     alt User accepts transfer
-        Receiver->>Sender: 8. Send Encrypted PROCEED
+        Receiver->>Sender: 10. Send Encrypted PROCEED
     else User declines or file conflict
-        Receiver->>Sender: 8. Send Encrypted ABORT
+        Receiver->>Sender: 10. Send Encrypted ABORT
         Note over Sender,Receiver: Transfer cancelled
     end
 
@@ -57,7 +60,7 @@ sequenceDiagram
         Sender->>Receiver: Send Encrypted Chunk (QUIC Stream)
     end
 
-    Receiver->>Sender: 9. Send Encrypted ACK
+    Receiver->>Sender: 11. Send Encrypted ACK
 ```
 
 #### Serverless Mode (iroh with relays disabled)
@@ -91,7 +94,7 @@ sequenceDiagram
     Note over Sender: User shares beam code out-of-band
 
     Receiver->>Receiver: 4. Parse serverless payload
-    Receiver->>Sender: 5. Connect directly to embedded IPs (mDNS fallback) over QUIC (ALPN beam-transfer/1)
+    Receiver->>Sender: 5. Connect directly to embedded IPs (mDNS fallback) over QUIC (ALPN beam-transfer/2)
     Sender->>Receiver: 6. SPAKE2 using the copied session secret
 
     Note over Sender,Receiver: From here identical to iroh mode
@@ -147,7 +150,7 @@ sequenceDiagram
 - **Relay**: iroh relays (DERP) - automatically used if direct P2P connection fails.
 - **Failover**: Uses multiple relays for redundancy; monitors latency to select the best path.
 - **Connection**: "Hole punching" attempts to establish a direct UDP connection; falls back to relay if NATs are strict.
-- **Protocol**: ALPN `beam-transfer/1`.
+- **Protocol**: ALPN `beam-transfer/2`.
 - **PIN Support**: Yes. The default PIN flow races Nostr and LAN rendezvous and tolerates an unavailable relay so same-LAN peers can pair offline.
 - **Encryption**: Always AES-256-GCM encrypted at the application layer, plus QUIC/TLS encryption.
 
@@ -175,11 +178,12 @@ Default Iroh mode uses two encryption layers for defense in depth:
 
 **Transport Layer (iroh/QUIC)**:
 - TLS 1.3/QUIC encryption (cipher negotiated by iroh/quinn)
-- Mutual authentication via iroh node identities (NodeID in beam code)
+- The receiver pins the sender node ID from its pairing input during the QUIC handshake.
+- The sender reads the receiver node ID from the peer certificate, then authorizes that exact ID only after SPAKE2 secret proof and mutual key confirmation. Failed clients are closed and the sender continues accepting.
 
 **Application Layer (beam-rs)**:
 - AES-256-GCM encryption for all data: headers, chunks, and control signals
-- 256-bit key generated per transfer, embedded in beam code
+- 256-bit one-time secret generated per transfer and embedded in the iroh beam code; SPAKE2 derives the content key after binding the receiver's claimed node ID to its authenticated QUIC identity
 
 ### PIN-based Key Exchange (PIN Mode)
 

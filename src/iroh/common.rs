@@ -215,7 +215,7 @@ pub fn watch_connection_paths(conn: &Connection) -> PathWatcherGuard {
 }
 
 /// Application-Layer Protocol Negotiation identifier for beam transfers.
-pub const ALPN: &[u8] = b"beam-transfer/1";
+pub const ALPN: &[u8] = b"beam-transfer/2";
 
 /// Parse relay URL strings into a RelayMode.
 ///
@@ -451,7 +451,7 @@ pub fn minimal_addr_to_endpoint(addr: &MinimalAddr) -> Result<EndpointAddr> {
 /// relays without needing them passed on its own command line.
 pub fn generate_code(
     addr: &EndpointAddr,
-    key: &[u8; 32],
+    session_secret: &[u8; 32],
     relay_urls: &[String],
 ) -> Result<String> {
     let minimal_addr = minimal_addr_from_endpoint(addr, relay_urls);
@@ -460,7 +460,7 @@ pub fn generate_code(
         version: CURRENT_VERSION,
         protocol: PROTOCOL_IROH.to_string(),
         created_at: beam_rs::core::beam::current_timestamp(),
-        key: URL_SAFE_NO_PAD.encode(key),
+        key: URL_SAFE_NO_PAD.encode(session_secret),
         addr: Some(minimal_addr),
         onion_address: None,
     };

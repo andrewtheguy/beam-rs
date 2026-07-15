@@ -179,13 +179,14 @@ For protocol details and wire formats, see [ARCHITECTURE.md](docs/ARCHITECTURE.m
 ## Security
 
 All modes provide end-to-end encryption.
-- **Default iroh and Tor**: The beam code carries the key/address information.
+- **Default iroh**: The beam code carries a one-time secret and sender address. SPAKE2 proves secret possession, binds it to the receiver's authenticated iroh node ID, and derives the content-encryption key before metadata is sent.
+- **Tor**: The beam code carries the content-encryption key and onion address.
 - **Serverless**: The copied beam code carries a 256-bit session secret and direct address hints; SPAKE2 derives the content-encryption key.
 - **PIN mode (`send --pin`)**: Nostr and mDNS carry only an encrypted ephemeral node ID. After connection, SPAKE2 proves PIN possession and derives the content-encryption key. The leading `A` selects normal discovery; `--serverless --pin` emits a leading `B`, which makes the receiver limit discovery to mDNS and disable relays/DNS automatically.
 
 | Mode | Type | Key Exchange | Transport Encryption | Content Encryption |
 |------|------|--------------|---------------------|-------------------|
-| iroh | Internet | Beam Code | QUIC/TLS 1.3 | AES-256-GCM |
+| iroh | Internet | Beam Code secret + SPAKE2 node-ID authorization | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
 | iroh (`--pin`) | Internet or LAN | Encrypted node-ID rendezvous + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
 | iroh (`--serverless`) | Direct (LAN/public) | Copied 256-bit secret + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
 | iroh (`--serverless --pin`) | Direct (LAN) | mDNS node-ID rendezvous + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |

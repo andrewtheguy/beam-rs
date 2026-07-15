@@ -5,7 +5,7 @@ pub mod rendezvous;
 pub mod serverless_code;
 pub mod spake2;
 
-/// Secret and session context used by PIN and serverless pairing authentication.
+/// One-time secret and session context used to authorize an iroh receiver.
 pub struct PairingAuth {
     pub secret: String,
     pub session_id: String,

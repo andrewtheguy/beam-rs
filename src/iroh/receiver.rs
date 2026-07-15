@@ -29,8 +29,6 @@ pub async fn receive(
 
     // Parse the beam code
     let token = parse_code(code).context("Failed to parse beam code")?;
-    let key = beam_rs::core::beam::decode_key(&token.key)
-        .context("Failed to decode encryption key")?;
     let minimal_addr = token
         .addr
         .context("No iroh endpoint address in beam code")?;
@@ -40,12 +38,15 @@ pub async fn receive(
     let relay_urls = minimal_addr.relay_urls.clone();
     let addr = minimal_addr_to_endpoint(&minimal_addr)
         .context("Failed to parse endpoint address")?;
+    let pairing_auth = PairingAuth {
+        secret: token.key,
+        session_id: addr.id.to_string(),
+    };
 
     receive_internal(
         addr,
         relay_urls,
-        key,
-        None,
+        pairing_auth,
         EndpointReadiness::RelayOnline,
         output_dir,
         no_resume,
@@ -66,8 +67,7 @@ pub async fn receive_paired(
     receive_internal(
         addr,
         Vec::new(),
-        [0u8; 32],
-        Some(PairingAuth { secret, session_id }),
+        PairingAuth { secret, session_id },
         readiness,
         output_dir,
         no_resume,
@@ -78,8 +78,7 @@ pub async fn receive_paired(
 async fn receive_internal(
     addr: EndpointAddr,
     relay_urls: Vec<String>,
-    key: [u8; 32],
-    pairing_auth: Option<PairingAuth>,
+    pairing_auth: PairingAuth,
     readiness: EndpointReadiness,
     output_dir: Option<PathBuf>,
     no_resume: bool,
@@ -88,6 +87,7 @@ async fn receive_internal(
 
     // Create iroh endpoint
     let endpoint = create_receiver_endpoint(relay_urls, readiness).await?;
+    let local_id = endpoint.addr().id.to_string();
 
     // Connect to sender
     let conn = endpoint.connect(addr, ALPN).await.map_err(|e| {
@@ -140,8 +140,9 @@ async fn receive_internal(
         }
     };
 
-    // PIN and serverless modes both authenticate their session secret with SPAKE2.
-    let (key, send_stream) = if let Some(ref pairing_auth) = pairing_auth {
+    // Prove possession of the one-time secret and bind it to this endpoint ID
+    // before accepting any transfer metadata.
+    let (key, send_stream) = {
         // Read the "ready" byte sent by the sender to confirm the stream is established.
         // See sender.rs for why this is needed (QUIC stream materialization).
         let mut ready = [0u8; 1];
@@ -165,6 +166,7 @@ async fn receive_internal(
                 &mut duplex,
                 &pairing_auth.secret,
                 &pairing_auth.session_id,
+                &local_id,
             ),
         )
         .await
@@ -182,8 +184,6 @@ async fn receive_internal(
                 return Err(e);
             }
         }
-    } else {
-        (key, send_stream)
     };
 
     // Create owned duplex for unified transfer logic
