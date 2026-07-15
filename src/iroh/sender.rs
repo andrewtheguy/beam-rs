@@ -94,8 +94,8 @@ async fn transfer_data_internal(
     pairing_mode: PairingMode,
     shutdown_rx: Option<oneshot::Receiver<()>>,
 ) -> Result<()> {
-    // Every iroh flow uses this one-time secret to authorize the connecting
-    // endpoint before any transfer metadata or content is sent.
+    // Copied-code iroh flows use this one-time secret to authorize the connecting
+    // endpoint before any transfer metadata or content is sent. PIN flows use the PIN.
     let session_secret = generate_key();
 
     let readiness = match pairing_mode {
@@ -126,12 +126,8 @@ async fn transfer_data_internal(
         PairingMode::Serverless => {
             wait_for_direct_address_hint(&endpoint).await;
             let addr = endpoint.addr();
-            let secret_bytes = generate_key();
-            let code = crate::auth::serverless_code::encode(&addr, &secret_bytes)?;
-            let secret = base64::Engine::encode(
-                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                secret_bytes,
-            );
+            let code = crate::auth::serverless_code::encode(&addr, &session_secret)?;
+            let secret = URL_SAFE_NO_PAD.encode(session_secret);
             print_receiver_command("beam-rs receive");
             ui::show_code(&code);
             ui::info("Then paste the beam code when prompted.\n");
@@ -214,9 +210,9 @@ async fn transfer_data_internal(
 
     let (conn, mut send_stream, mut recv_stream, key) = loop {
         let authorize = async {
-            let incoming = endpoint.accept().await.ok_or_else(|| {
-                anyhow::anyhow!("Sender endpoint closed while waiting for a receiver")
-            })?;
+            let Some(incoming) = endpoint.accept().await else {
+                return Ok::<_, anyhow::Error>(None);
+            };
 
             let conn = incoming.await.map_err(|e| {
                 if is_relay_or_network_error(&e) {
@@ -255,7 +251,7 @@ async fn transfer_data_internal(
                 }
             };
 
-            Ok::<_, anyhow::Error>((conn, send_stream, recv_stream, key, remote_id))
+            Ok::<_, anyhow::Error>(Some((conn, send_stream, recv_stream, key, remote_id)))
         };
 
         let result = if let Some(deadline) = pin_deadline {
@@ -280,10 +276,21 @@ async fn transfer_data_internal(
         };
 
         match result {
-            Ok((conn, send_stream, recv_stream, key, remote_id)) => {
+            Ok(Some((conn, send_stream, recv_stream, key, remote_id))) => {
                 ui::status("Authorized receiver connected!");
                 ui::status(&format!("   Receiver ID: {remote_id}"));
                 break (conn, send_stream, recv_stream, key);
+            }
+            Ok(None) => {
+                if let Some(task) = nostr_publisher.take() {
+                    task.abort();
+                }
+                drop(pin_advert.take());
+                if let Some(task) = countdown_task.take() {
+                    task.abort();
+                }
+                ui::transient_status("");
+                anyhow::bail!("Sender endpoint closed while waiting for a receiver");
             }
             Err(error) => {
                 log::warn!("Rejected unauthorized receiver: {error:#}");
