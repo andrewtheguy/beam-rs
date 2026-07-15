@@ -7,7 +7,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 
-const SERVERLESS_CODE_VERSION: u8 = 1;
+const SERVERLESS_CODE_VERSION: u8 = 2;
 const PROTOCOL_SERVERLESS: &str = "iroh-serverless";
 
 #[derive(Serialize, Deserialize)]

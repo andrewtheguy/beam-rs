@@ -3,7 +3,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Current token format version
-pub const CURRENT_VERSION: u8 = 5;
+pub const CURRENT_VERSION: u8 = 6;
 
 /// TTL for beam sessions in seconds (1 hour)
 pub const SESSION_TTL_SECS: u64 = 3600;
@@ -84,7 +84,8 @@ pub struct BeamToken {
     pub protocol: String,
     /// Unix timestamp when this token was created (for TTL validation)
     pub created_at: u64,
-    /// AES-256-GCM key as base64 string (always present for iroh/tor)
+    /// Base64-encoded 256-bit secret. Iroh uses it to authorize the receiver and
+    /// derive the content key; Tor uses it directly as the content key.
     pub key: String,
     /// Minimal endpoint address for connection (None for non-iroh transports)
     /// Contains only node ID and relay URL
@@ -215,7 +216,7 @@ pub fn parse_code(code: &str) -> Result<BeamToken> {
         );
     }
 
-    // Validate key format (required for all current protocols)
+    // Validate the 256-bit secret/key format (required for all current protocols)
     let key_bytes = URL_SAFE_NO_PAD
         .decode(&token.key)
         .context("Invalid key format: not valid base64")?;

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use iroh::endpoint::ConnectingError;
 use std::path::Path;
 use std::time::Duration;
@@ -93,8 +94,9 @@ async fn transfer_data_internal(
     pairing_mode: PairingMode,
     shutdown_rx: Option<oneshot::Receiver<()>>,
 ) -> Result<()> {
-    // Always generate encryption key for application-layer encryption
-    let key = generate_key();
+    // Every iroh flow uses this one-time secret to authorize the connecting
+    // endpoint before any transfer metadata or content is sent.
+    let session_secret = generate_key();
 
     let readiness = match pairing_mode {
         PairingMode::BeamCode => EndpointReadiness::RelayOnline,
@@ -111,11 +113,15 @@ async fn transfer_data_internal(
 
     let pairing_auth = match pairing_mode {
         PairingMode::BeamCode => {
-            let code = generate_code(&endpoint.addr(), &key, &relay_urls)?;
+            let addr = endpoint.addr();
+            let code = generate_code(&addr, &session_secret, &relay_urls)?;
             print_receiver_command("beam-rs receive");
             ui::show_code(&code);
             ui::info("Then enter the code above when prompted.\n");
-            None
+            PairingAuth {
+                secret: URL_SAFE_NO_PAD.encode(session_secret),
+                session_id: addr.id.to_string(),
+            }
         }
         PairingMode::Serverless => {
             wait_for_direct_address_hint(&endpoint).await;
@@ -129,10 +135,10 @@ async fn transfer_data_internal(
             print_receiver_command("beam-rs receive");
             ui::show_code(&code);
             ui::info("Then paste the beam code when prompted.\n");
-            Some(PairingAuth {
+            PairingAuth {
                 secret,
                 session_id: addr.id.to_string(),
-            })
+            }
         }
         PairingMode::Pin(channel) => {
             let pin_mode = match channel {
@@ -183,17 +189,17 @@ async fn transfer_data_internal(
                 tokio::time::Instant::now()
                     + Duration::from_secs(crate::auth::pin::PIN_LIFETIME_SECS),
             );
-            Some(PairingAuth {
+            PairingAuth {
                 secret: pin,
                 session_id: addr.id.to_string(),
-            })
+            }
         }
     };
 
     ui::status("Waiting for receiver to connect...");
 
-    let incoming = if let Some(deadline) = pin_deadline {
-        let countdown_task = tokio::spawn(async move {
+    let mut countdown_task = pin_deadline.map(|_| {
+        tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(Duration::from_secs(PIN_COUNTDOWN_INTERVAL_SECS));
             interval.tick().await;
@@ -203,105 +209,98 @@ async fn transfer_data_internal(
                 seconds_remaining -= PIN_COUNTDOWN_INTERVAL_SECS;
                 ui::transient_status(&format!("PIN expires in {seconds_remaining} seconds..."));
             }
-        });
-        let result = tokio::time::timeout_at(deadline, endpoint.accept()).await;
-        countdown_task.abort();
-        let _ = countdown_task.await;
-        ui::transient_status("");
-        match result {
-            Ok(Some(incoming)) => incoming,
-            Ok(None) => anyhow::bail!("Sender endpoint closed while waiting for a receiver"),
-            Err(_) => {
-                if let Some(task) = nostr_publisher.take() {
-                    task.abort();
+        })
+    });
+
+    let (conn, mut send_stream, mut recv_stream, key) = loop {
+        let authorize = async {
+            let incoming = endpoint.accept().await.ok_or_else(|| {
+                anyhow::anyhow!("Sender endpoint closed while waiting for a receiver")
+            })?;
+
+            let conn = incoming.await.map_err(|e| {
+                if is_relay_or_network_error(&e) {
+                    anyhow::anyhow!("Failed to accept connection: {e}")
+                } else {
+                    anyhow::anyhow!("Failed to authenticate iroh connection: {e}")
                 }
-                drop(pin_advert.take());
-                endpoint.close().await;
-                ui::status("PIN expired; sender stopped.");
-                return Ok(());
+            })?;
+            let remote_id = conn.remote_id();
+            let (mut send_stream, mut recv_stream) =
+                conn.open_bi().await.context("Failed to open authorization stream")?;
+
+            // Materialize the QUIC stream before the receiver waits in accept_bi().
+            send_stream
+                .write_all(&[0x01])
+                .await
+                .context("Failed to send authorization ready byte")?;
+            let mut duplex = IrohDuplex::new(&mut send_stream, &mut recv_stream);
+            let handshake_result = tokio::time::timeout(
+                Duration::from_secs(30),
+                handshake_as_responder(
+                    &mut duplex,
+                    &pairing_auth.secret,
+                    &pairing_auth.session_id,
+                    &remote_id.to_string(),
+                ),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Peer authorization timed out"))
+            .and_then(|result| result.context("Peer authorization failed"));
+            let key = match handshake_result {
+                Ok(key) => key,
+                Err(error) => {
+                    conn.close(close_codes::ERROR, b"unauthorized");
+                    return Err(error);
+                }
+            };
+
+            Ok::<_, anyhow::Error>((conn, send_stream, recv_stream, key, remote_id))
+        };
+
+        let result = if let Some(deadline) = pin_deadline {
+            match tokio::time::timeout_at(deadline, authorize).await {
+                Ok(result) => result,
+                Err(_) => {
+                    if let Some(task) = nostr_publisher.take() {
+                        task.abort();
+                    }
+                    drop(pin_advert.take());
+                    if let Some(task) = countdown_task.take() {
+                        task.abort();
+                    }
+                    ui::transient_status("");
+                    endpoint.close().await;
+                    ui::status("PIN expired; sender stopped.");
+                    return Ok(());
+                }
+            }
+        } else {
+            authorize.await
+        };
+
+        match result {
+            Ok((conn, send_stream, recv_stream, key, remote_id)) => {
+                ui::status("Authorized receiver connected!");
+                ui::status(&format!("   Receiver ID: {remote_id}"));
+                break (conn, send_stream, recv_stream, key);
+            }
+            Err(error) => {
+                log::warn!("Rejected unauthorized receiver: {error:#}");
+                ui::status("Rejected unauthorized receiver; waiting for the intended receiver...");
             }
         }
-    } else {
-        endpoint.accept().await.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No incoming connection.\n\n\
-                 Troubleshooting:\n  \
-                 - Ensure the receiver has the correct pairing input\n  \
-                 - Check network connectivity on both ends"
-            )
-        })?
     };
+    if let Some(task) = countdown_task.take() {
+        task.abort();
+    }
+    ui::transient_status("");
     if let Some(task) = nostr_publisher.take() {
         task.abort();
     }
     drop(pin_advert.take());
 
-    let conn = incoming
-        .await
-        .map_err(|e| {
-            // Use structured error types to determine if this is a relay/network issue
-            if is_relay_or_network_error(&e) {
-                anyhow::anyhow!(
-                    "Failed to accept connection: {}\n\n\
-                     Relay connection failed. Check network connectivity and firewall settings.",
-                    e
-                )
-            } else {
-                anyhow::anyhow!(
-                    "Failed to accept connection: {}\n\n\
-                     Troubleshooting:\n  \
-                     - Ensure the receiver has the correct pairing input\n  \
-                     - Check network connectivity and firewall settings",
-                    e
-                )
-            }
-        })?;
-
-    let remote_id = conn.remote_id();
-    ui::status("Receiver connected!");
-    ui::status(&format!("   Remote ID: {}", remote_id));
-
     let path_watcher = watch_connection_paths(&conn);
-
-    // Open bi-directional stream
-    let (mut send_stream, mut recv_stream) =
-        conn.open_bi().await.context("Failed to open stream")?;
-
-    // PIN and serverless modes both authenticate their session secret with SPAKE2.
-    let key = if let Some(ref pairing_auth) = pairing_auth {
-        ui::status("Performing SPAKE2 authentication...");
-        // Write a "ready" byte to materialize the QUIC stream on the receiver side.
-        // In QUIC, open_bi() allocates the stream locally but may not send a STREAM
-        // frame until data is written. Since SPAKE2 responder reads first, without
-        // this the receiver's accept_bi() would never see the stream.
-        send_stream.write_all(&[0x01]).await.context("Failed to send ready byte")?;
-        let mut duplex = IrohDuplex::new(&mut send_stream, &mut recv_stream);
-        let handshake_result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            handshake_as_responder(
-                &mut duplex,
-                &pairing_auth.secret,
-                &pairing_auth.session_id,
-            ),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("SPAKE2 handshake timed out"))
-        .and_then(|r| r.map_err(|e| anyhow::anyhow!("SPAKE2 handshake failed: {}", e)));
-        match handshake_result {
-            Ok(derived_key) => {
-                ui::status("SPAKE2 authentication successful!");
-                derived_key
-            }
-            Err(e) => {
-                drop(path_watcher);
-                conn.close(close_codes::ERROR, b"handshake failed");
-                endpoint.close().await;
-                return Err(e);
-            }
-        }
-    } else {
-        key
-    };
 
     // Create header and run unified transfer logic
     let header = FileHeader::new(transfer_type, filename, file_size, checksum);
