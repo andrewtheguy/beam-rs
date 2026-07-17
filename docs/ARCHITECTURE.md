@@ -192,7 +192,7 @@ selects LAN-only PIN discovery. The sender encodes that choice in the PIN so the
 receiver needs no mode flag.
 
 - **Format**: Ten uppercase characters grouped `XXXXX-XXXXX`. The first byte is `A` for normal PIN mode or `B` for serverless PIN mode, followed by eight random Crockford-base32 characters (~40 bits) and a position-weighted check character. Input is case-insensitive and maps common lookalikes.
-- **Record key**: Argon2id derives a Nostr keypair from the canonical PIN and current 120-second wall-clock bucket using 64 MiB, three passes, and one lane. Receivers derive candidates for the current, previous, and next buckets.
+- **Record key**: Argon2id derives a Nostr keypair from the canonical PIN and current 120-second wall-clock bucket using 64 MiB, three passes, and one lane. Receivers derive candidates for the current and previous buckets.
 - **Record content**: NIP-44 self-encryption protects a JSON payload containing only the sender's ephemeral iroh node ID. The derived public key is the lookup key on both Nostr and mDNS. No transfer key or reusable credential is published.
 - **Channels**: An `A` PIN races a stored Nostr record and a `_beam-rs-pin._udp.local.` mDNS record, then creates a relay-capable receiver endpoint. A `B` PIN performs only the mDNS query and creates an endpoint with iroh relays and internet DNS/pkarr disabled.
 - **Lifetime**: The Nostr event expires after 120 seconds and the mDNS advertisement is withdrawn when the process exits. The sender displays one PIN and exits after 120 seconds if no receiver starts connecting.
