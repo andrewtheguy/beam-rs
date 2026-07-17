@@ -18,9 +18,13 @@ pub fn pin_keys(canonical_pin: &str, bucket: u64) -> Result<Keys> {
     Ok(Keys::new(secret))
 }
 
+fn candidate_buckets(current: u64) -> [u64; 2] {
+    [current, current.wrapping_sub(1)]
+}
+
 pub async fn candidate_keys(canonical_pin: &str) -> Result<Vec<Keys>> {
     let current = pin::current_bucket();
-    let buckets = [current, current.wrapping_sub(1), current + 1];
+    let buckets = candidate_buckets(current);
     tokio::task::spawn_blocking({
         let pin = canonical_pin.to_string();
         move || buckets.iter().map(|bucket| pin_keys(&pin, *bucket)).collect()
@@ -52,6 +56,11 @@ pub fn decrypt_pin_payload(keys: &Keys, content: &str) -> Option<EndpointId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidates_include_only_current_and_previous_buckets() {
+        assert_eq!(candidate_buckets(42), [42, 41]);
+    }
 
     #[test]
     fn payload_round_trips_and_wrong_key_fails() {
