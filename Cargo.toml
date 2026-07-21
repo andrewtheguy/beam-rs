@@ -1,6 +1,6 @@
 [package]
 name = "beam-rs"
-version = "0.0.26"
+version = "0.0.27"
 edition = "2024"
 
 [lib]
@@ -31,6 +31,13 @@ argon2 = "0.5"
 spake2 = "0.4"
 
 # File handling / hashing
+# liblzma is pulled in transitively via arti-client -> async-compression. By
+# default liblzma-sys links the system liblzma (Homebrew's xz on the macOS CI
+# runner), which produces a binary that fails on machines without that dylib.
+# Depend on it directly with `static` so the bundled liblzma is built from
+# source and linked statically; feature unification applies this to the
+# transitive copy too.
+liblzma = { version = "0.4.6", features = ["static"] }
 tar = "0.4"
 walkdir = "2"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
