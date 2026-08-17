@@ -7,8 +7,8 @@ This document provides a detailed walkthrough of the beam-rs implementation.
 beam-rs supports the following transfer modes:
 
 1. **Default Iroh mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`. Requires internet access.
-2. **PIN mode** - publishes an encrypted ephemeral node-ID record over Nostr and mDNS, then authenticates and derives the content key with SPAKE2. A PIN is valid once for 120 seconds.
-3. **Serverless Mode** - uses iroh with relays and internet discovery disabled via `beam-rs send --serverless`. A pasted serverless payload carries the node ID, a 256-bit session secret, and discovered direct addresses. Adding `--pin` replaces the pasted payload with LAN-only mDNS PIN discovery.
+2. **PIN mode** - publishes an encrypted ephemeral node-ID record over LAN mDNS, then authenticates and derives the content key with SPAKE2. Relays and internet discovery are disabled, and a PIN is valid once for 120 seconds.
+3. **Serverless Mode** - uses iroh with relays and internet discovery disabled via `beam-rs send --serverless`. A pasted serverless payload carries the node ID, a 256-bit session secret, and discovered direct addresses.
 4. **Tor Mode** - Anonymous transfers via Tor hidden services (uses `arti`) via `beam-rs send --tor`. Requires internet access.
 
 ## Transfer Flows
@@ -74,12 +74,10 @@ The receiver constructs its target from those embedded addresses, while mDNS
 continues as a fallback. After connecting, both sides run SPAKE2 with the
 payload's secret; the derived key encrypts the application protocol.
 
-With `--serverless --pin`, no long payload is copied. The sender advertises the
-same encrypted PIN rendezvous record used by normal PIN mode, but only through
-mDNS. Its PIN starts with `B`, so the receiver selects LAN-only discovery and a
-relayless, mDNS-only endpoint before doing any lookup. The one displayed PIN
-expires after 120 seconds, at which point the sender exits rather than rotating
-it.
+With `--pin`, no long payload is copied. The sender advertises an encrypted PIN
+rendezvous record through mDNS. The receiver selects a relayless, mDNS-only
+endpoint before doing the lookup. The one displayed PIN expires after 120
+seconds, at which point the sender exits rather than rotating it.
 
 ```mermaid
 sequenceDiagram
@@ -151,7 +149,7 @@ sequenceDiagram
 - **Failover**: Uses multiple relays for redundancy; monitors latency to select the best path.
 - **Connection**: "Hole punching" attempts to establish a direct UDP connection; falls back to relay if NATs are strict.
 - **Protocol**: ALPN `beam-transfer/2`.
-- **PIN Support**: Yes. The default PIN flow races Nostr and LAN rendezvous and tolerates an unavailable relay so same-LAN peers can pair offline.
+- **PIN Support**: No. PIN pairing is a separate LAN-only, relayless mode.
 - **Encryption**: Always AES-256-GCM encrypted at the application layer, plus QUIC/TLS encryption.
 
 ### Serverless Mode (`beam-rs send --serverless`)
@@ -159,9 +157,17 @@ sequenceDiagram
 - **Transport**: QUIC / TLS 1.3 (same as iroh mode)
 - **Discovery**: Direct addresses embedded in the serverless payload, with mDNS as a fallback; relays and n0 DNS/pkarr are disabled.
 - **Key Exchange**: The pasted payload carries a fresh 256-bit session secret; SPAKE2 derives the AES key in-band.
-- **PIN Support**: Yes via `send --serverless --pin` and a normal `receive` command. The leading `B` selects LAN-only receiver behavior; the encrypted node-ID record is advertised over mDNS only and no long code is copied.
+- **PIN Support**: No. `--pin` is a separate serverless pairing mode.
 - **Encryption**: AES-256-GCM with a SPAKE2-derived key, plus QUIC/TLS encryption.
 - **Reachability**: Primarily intended for the same LAN. Embedded public/port-mapped addresses can permit a direct WAN path, but NAT/firewalls commonly prevent it. Incompatible with `--relay-url`.
+
+### PIN Mode (`beam-rs send --pin`)
+
+- **Transport**: QUIC / TLS 1.3 with relays disabled.
+- **Discovery**: An encrypted ephemeral node-ID record advertised over mDNS only; n0 DNS/pkarr are disabled.
+- **Key Exchange**: SPAKE2 authenticates the PIN in-band and derives the AES key.
+- **Encryption**: AES-256-GCM with a SPAKE2-derived key, plus QUIC/TLS encryption.
+- **Reachability**: LAN only. Both peers must share a network where mDNS works. Incompatible with `--serverless` and `--relay-url`.
 
 ### Tor Mode (`beam-rs send --tor`)
 
@@ -187,15 +193,14 @@ Default Iroh mode uses two encryption layers for defense in depth:
 
 ### PIN-based Key Exchange (PIN Mode)
 
-PIN mode is available through `beam-rs send --pin`; adding `--serverless`
-selects LAN-only PIN discovery. The sender encodes that choice in the PIN so the
-receiver needs no mode flag.
+PIN mode is available through `beam-rs send --pin` and is always serverless and
+LAN-only.
 
-- **Format**: Ten uppercase characters grouped `XXXXX-XXXXX`. The first byte is `A` for normal PIN mode or `B` for serverless PIN mode, followed by eight random Crockford-base32 characters (~40 bits) and a position-weighted check character. Input is case-insensitive and maps common lookalikes.
-- **Record key**: Argon2id derives a Nostr keypair from the canonical PIN and current 120-second wall-clock bucket using 64 MiB, three passes, and one lane. Receivers derive candidates for the current, previous, and next buckets.
-- **Record content**: NIP-44 self-encryption protects a JSON payload containing only the sender's ephemeral iroh node ID. The derived public key is the lookup key on both Nostr and mDNS. No transfer key or reusable credential is published.
-- **Channels**: An `A` PIN races a stored Nostr record and a `_beam-rs-pin._udp.local.` mDNS record, then creates a relay-capable receiver endpoint. A `B` PIN performs only the mDNS query and creates an endpoint with iroh relays and internet DNS/pkarr disabled.
-- **Lifetime**: The Nostr event expires after 120 seconds and the mDNS advertisement is withdrawn when the process exits. The sender displays one PIN and exits after 120 seconds if no receiver starts connecting.
+- **Format**: Ten uppercase characters grouped `XXXXX-XXXXX`: nine random Crockford-base32 characters (~45 bits) and a position-weighted check character. Input is case-insensitive and maps common lookalikes.
+- **Record key**: Argon2id derives encryption and mDNS lookup material from the canonical PIN and current 120-second wall-clock bucket using 64 MiB, three passes, and one lane. Receivers derive candidates for the current, previous, and next buckets.
+- **Record content**: AES-256-GCM protects a JSON payload containing only the sender's ephemeral iroh node ID. No transfer key or reusable credential is advertised.
+- **Discovery**: The sender publishes a `_beam-rs-pin._udp.local.` mDNS record. The receiver queries mDNS and creates an endpoint with iroh relays and internet DNS/pkarr disabled.
+- **Lifetime**: The mDNS advertisement is withdrawn when the process exits. The sender displays one PIN and exits after 120 seconds if no receiver starts connecting.
 - **Authentication and key derivation**: The PIN is the SPAKE2 password. The sender's node ID is used as the session context and validated during the handshake. The SPAKE2 result becomes the AES-256-GCM content key.
 - **Security**: SPAKE2 prevents a passive transcript from becoming an offline PIN verifier. The public PIN-derived rendezvous record can still be tested offline, so its Argon2id cost and short lifetime are important mitigations.
 

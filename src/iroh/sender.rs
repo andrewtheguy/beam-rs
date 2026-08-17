@@ -12,8 +12,6 @@ use super::common::{
 };
 use crate::cli::instructions::print_receiver_command;
 use crate::auth::PairingAuth;
-use crate::auth::pin::PinMode;
-use crate::auth::rendezvous::PinChannel;
 use crate::auth::spake2::handshake_as_responder;
 use beam_rs::core::crypto::generate_key;
 use beam_rs::ui;
@@ -25,7 +23,7 @@ use beam_rs::core::transfer::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PairingMode {
     BeamCode,
-    Pin(PinChannel),
+    Pin,
     Serverless,
 }
 
@@ -100,15 +98,11 @@ async fn transfer_data_internal(
 
     let readiness = match pairing_mode {
         PairingMode::BeamCode => EndpointReadiness::RelayOnline,
-        PairingMode::Pin(PinChannel::NostrAndLan) => EndpointReadiness::RelayPreferred,
-        PairingMode::Pin(PinChannel::LanOnly) | PairingMode::Serverless => {
-            EndpointReadiness::LanDirect
-        }
+        PairingMode::Pin | PairingMode::Serverless => EndpointReadiness::LanDirect,
     };
     let endpoint = create_sender_endpoint(relay_urls.clone(), readiness).await?;
 
     let mut pin_advert = None;
-    let mut nostr_publisher = None;
     let mut pin_deadline = None;
 
     let pairing_auth = match pairing_mode {
@@ -136,45 +130,22 @@ async fn transfer_data_internal(
                 session_id: addr.id.to_string(),
             }
         }
-        PairingMode::Pin(channel) => {
-            let pin_mode = match channel {
-                PinChannel::NostrAndLan => PinMode::Normal,
-                PinChannel::LanOnly => PinMode::Serverless,
-            };
-            let pin = crate::auth::pin::generate_pin(pin_mode);
+        PairingMode::Pin => {
+            let pin = crate::auth::pin::generate_pin();
             let bucket = crate::auth::pin::current_bucket();
-            let keys = tokio::task::spawn_blocking({
+            let key = tokio::task::spawn_blocking({
                 let pin = pin.clone();
-                move || crate::auth::pin_record::pin_keys(&pin, bucket)
+                move || crate::auth::pin_record::record_key(&pin, bucket)
             })
             .await
             .context("PIN key-derivation task failed")??;
             let addr = endpoint.addr();
-            if channel.lan() {
-                let direct_addrs: Vec<_> = addr.ip_addrs().copied().collect();
-                match crate::auth::lan::advertise_pin_record(&keys, &addr.id, direct_addrs) {
-                    Ok(advert) => pin_advert = Some(advert),
-                    Err(error) if channel == PinChannel::LanOnly => return Err(error),
-                    Err(error) => {
-                        log::warn!("Failed to advertise PIN on the local network: {error:#}")
-                    }
-                }
-            }
-            let expires_at_unix = crate::auth::rendezvous::expires_at_unix();
-            if channel.nostr() {
-                let node_id = addr.id;
-                nostr_publisher = Some(tokio::spawn(async move {
-                    if let Err(error) = crate::auth::rendezvous::publish_nostr_record(
-                        &keys,
-                        &node_id,
-                        expires_at_unix,
-                    )
-                    .await
-                    {
-                        log::warn!("Failed to publish PIN to Nostr: {error:#}");
-                    }
-                }));
-            }
+            let direct_addrs: Vec<_> = addr.ip_addrs().copied().collect();
+            pin_advert = Some(crate::auth::lan::advertise_pin_record(
+                &key,
+                &addr.id,
+                direct_addrs,
+            )?);
             print_receiver_command("beam-rs receive");
             ui::show_pin(&crate::auth::pin::format_pin(&pin));
             ui::info(&format!(
@@ -258,9 +229,6 @@ async fn transfer_data_internal(
             match tokio::time::timeout_at(deadline, authorize).await {
                 Ok(result) => result,
                 Err(_) => {
-                    if let Some(task) = nostr_publisher.take() {
-                        task.abort();
-                    }
                     drop(pin_advert.take());
                     if let Some(task) = countdown_task.take() {
                         task.abort();
@@ -282,9 +250,6 @@ async fn transfer_data_internal(
                 break (conn, send_stream, recv_stream, key);
             }
             Ok(None) => {
-                if let Some(task) = nostr_publisher.take() {
-                    task.abort();
-                }
                 drop(pin_advert.take());
                 if let Some(task) = countdown_task.take() {
                     task.abort();
@@ -302,9 +267,6 @@ async fn transfer_data_internal(
         task.abort();
     }
     ui::transient_status("");
-    if let Some(task) = nostr_publisher.take() {
-        task.abort();
-    }
     drop(pin_advert.take());
 
     let path_watcher = watch_connection_paths(&conn);

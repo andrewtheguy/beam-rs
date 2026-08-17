@@ -259,7 +259,6 @@ fn print_relay_info(relay_urls: &[String]) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndpointReadiness {
     RelayOnline,
-    RelayPreferred,
     LanDirect,
 }
 
@@ -340,21 +339,12 @@ async fn wait_for_endpoint_ready(
 ) -> Result<()> {
     let ready = async {
         match readiness {
-            EndpointReadiness::RelayOnline | EndpointReadiness::RelayPreferred => {
-                endpoint.online().await
-            }
+            EndpointReadiness::RelayOnline => endpoint.online().await,
             EndpointReadiness::LanDirect => wait_for_direct_address(endpoint).await,
         }
     };
     match tokio::time::timeout(ENDPOINT_READY_TIMEOUT, ready).await {
         Ok(()) => Ok(()),
-        Err(_) if readiness == EndpointReadiness::RelayPreferred => {
-            log::info!(
-                "No relay came online after {}s; continuing with LAN discovery",
-                ENDPOINT_READY_TIMEOUT.as_secs()
-            );
-            Ok(())
-        }
         Err(_) => anyhow::bail!(
             "Endpoint failed to become ready after {}s",
             ENDPOINT_READY_TIMEOUT.as_secs()
