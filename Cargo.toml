@@ -46,9 +46,6 @@ crc32fast = "1.4"
 # Interactive line prompts
 rustyline = "18"
 
-# Nostr PIN rendezvous
-nostr-sdk = { version = "0.44.1", features = ["nip44"] }
-
 # iroh transport
 iroh = "1.0.2"
 iroh-mdns-address-lookup = "0.4.0"

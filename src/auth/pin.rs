@@ -1,9 +1,8 @@
 //! Short human-typable secrets used by PIN pairing.
 //!
-//! A mode marker (`A` for normal or `B` for serverless), eight random
-//! Crockford-base32 characters, and a check character form each PIN.
-//! PIN rendezvous keys are time-bucketed, while the secret used by the in-band
-//! SPAKE2 exchange is the canonical PIN itself.
+//! Nine random Crockford-base32 characters and a check character form each
+//! PIN. PIN rendezvous keys are time-bucketed, while the secret used by the
+//! in-band SPAKE2 exchange is the canonical PIN itself.
 
 use anyhow::{Context, Result};
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -17,22 +16,7 @@ pub const PIN_LIFETIME_SECS: u64 = 120;
 const ARGON2_MEM_KIB: u32 = 64 * 1024;
 const ARGON2_TIME: u32 = 3;
 const ARGON2_LANES: u32 = 1;
-const KDF_SALT_DOMAIN: &[u8] = b"beam-rs:pin-rendezvous:v2";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PinMode {
-    Normal,
-    Serverless,
-}
-
-impl PinMode {
-    fn marker(self) -> char {
-        match self {
-            Self::Normal => 'A',
-            Self::Serverless => 'B',
-        }
-    }
-}
+const KDF_SALT_DOMAIN: &[u8] = b"beam-rs:pin-rendezvous:v3";
 
 fn check_char(data: &[u8]) -> u8 {
     let mut sum = 0usize;
@@ -43,10 +27,9 @@ fn check_char(data: &[u8]) -> u8 {
     ALPHABET[sum % ALPHABET.len()]
 }
 
-pub fn generate_pin(mode: PinMode) -> String {
+pub fn generate_pin() -> String {
     let mut rng = rand::thread_rng();
     let mut output = String::with_capacity(PIN_LEN);
-    output.push(mode.marker());
     while output.len() < PIN_DATA_LEN {
         output.push(ALPHABET[rng.gen_range(0..ALPHABET.len())] as char);
     }
@@ -77,18 +60,7 @@ pub fn normalize_pin(input: &str) -> Option<String> {
         return None;
     }
     let (data, check) = output.as_bytes().split_at(PIN_DATA_LEN);
-    (pin_mode(&output).is_some() && check[0] == check_char(data)).then_some(output)
-}
-
-pub fn pin_mode(canonical_pin: &str) -> Option<PinMode> {
-    if canonical_pin.len() != PIN_LEN {
-        return None;
-    }
-    match canonical_pin.as_bytes()[0] {
-        b'A' => Some(PinMode::Normal),
-        b'B' => Some(PinMode::Serverless),
-        _ => None,
-    }
+    (check[0] == check_char(data)).then_some(output)
 }
 
 pub fn looks_like_pin(input: &str) -> bool {
@@ -123,14 +95,14 @@ pub fn current_bucket() -> u64 {
     seconds / PIN_LIFETIME_SECS
 }
 
-pub fn derive_key_material(canonical_pin: &str, bucket: u64) -> Result<[u8; 32]> {
-    let params = Params::new(ARGON2_MEM_KIB, ARGON2_TIME, ARGON2_LANES, Some(32))
+pub fn derive_key_material(canonical_pin: &str, bucket: u64) -> Result<[u8; 48]> {
+    let params = Params::new(ARGON2_MEM_KIB, ARGON2_TIME, ARGON2_LANES, Some(48))
         .map_err(|error| anyhow::anyhow!("invalid Argon2 parameters: {error}"))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut salt = Vec::with_capacity(KDF_SALT_DOMAIN.len() + 8);
     salt.extend_from_slice(KDF_SALT_DOMAIN);
     salt.extend_from_slice(&bucket.to_be_bytes());
-    let mut output = [0u8; 32];
+    let mut output = [0u8; 48];
     argon2
         .hash_password_into(canonical_pin.as_bytes(), &salt, &mut output)
         .map_err(|error| anyhow::anyhow!("Argon2 key derivation failed: {error}"))
@@ -144,12 +116,9 @@ mod tests {
 
     #[test]
     fn generated_pins_normalize() {
-        for mode in [PinMode::Normal, PinMode::Serverless] {
-            for _ in 0..100 {
-                let pin = generate_pin(mode);
-                assert_eq!(normalize_pin(&pin), Some(pin.clone()));
-                assert_eq!(pin_mode(&pin), Some(mode));
-            }
+        for _ in 0..100 {
+            let pin = generate_pin();
+            assert_eq!(normalize_pin(&pin), Some(pin.clone()));
         }
     }
 
@@ -168,7 +137,7 @@ mod tests {
 
     #[test]
     fn normalization_rejects_bad_checksum() {
-        let pin = generate_pin(PinMode::Normal);
+        let pin = generate_pin();
         let replacement = if pin.ends_with('0') { '1' } else { '0' };
         let invalid = format!("{}{replacement}", &pin[..PIN_DATA_LEN]);
         assert!(normalize_pin(&invalid).is_none());
@@ -176,16 +145,8 @@ mod tests {
     }
 
     #[test]
-    fn normalization_rejects_unknown_mode_marker() {
-        let mut pin = "C12345678".to_string();
-        pin.push(check_char(pin.as_bytes()) as char);
-        assert!(normalize_pin(&pin).is_none());
-        assert!(looks_like_pin(&pin));
-    }
-
-    #[test]
     fn rendezvous_derivation_is_bucketed() {
-        let pin = generate_pin(PinMode::Normal);
+        let pin = generate_pin();
         assert_eq!(
             derive_key_material(&pin, 42).unwrap(),
             derive_key_material(&pin, 42).unwrap()

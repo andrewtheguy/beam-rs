@@ -6,29 +6,24 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use iroh::EndpointId;
-use nostr_sdk::prelude::Keys;
 use swarm_discovery::{Discoverer, DropGuard};
 
-use super::pin_record;
+use super::pin_record::{self, PinRecordKey};
 
 const PIN_SERVICE_NAME: &str = "beam-rs-pin";
 const TXT_KEY: &str = "e";
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn instance_name(keys: &Keys) -> String {
-    keys.public_key().to_hex()[..32].to_string()
-}
-
 pub struct PinAdvert(#[allow(dead_code)] DropGuard);
 
 pub fn advertise_pin_record(
-    keys: &Keys,
+    key: &PinRecordKey,
     node_id: &EndpointId,
     addrs: impl IntoIterator<Item = SocketAddr>,
 ) -> Result<PinAdvert> {
-    let content = pin_record::encrypt_pin_payload(keys, node_id)?;
+    let content = pin_record::encrypt_pin_payload(key, node_id)?;
     let mut discoverer =
-        Discoverer::new_interactive(PIN_SERVICE_NAME.to_string(), instance_name(keys))
+        Discoverer::new_interactive(PIN_SERVICE_NAME.to_string(), key.instance_name().to_string())
             .with_txt_attributes([(TXT_KEY.to_string(), Some(content))])
             .context("PIN record does not fit an mDNS TXT attribute")?;
     for addr in addrs {
@@ -40,10 +35,10 @@ pub fn advertise_pin_record(
     Ok(PinAdvert(guard))
 }
 
-pub async fn lookup_pin_record(candidates: &[Keys]) -> Result<Option<EndpointId>> {
-    let by_instance: HashMap<String, &Keys> = candidates
+pub async fn lookup_pin_record(candidates: &[PinRecordKey]) -> Result<Option<EndpointId>> {
+    let by_instance: HashMap<String, &PinRecordKey> = candidates
         .iter()
-        .map(|keys| (instance_name(keys), keys))
+        .map(|key| (key.instance_name().to_string(), key))
         .collect();
     let accepted: std::collections::HashSet<String> = by_instance.keys().cloned().collect();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(16);
@@ -64,14 +59,26 @@ pub async fn lookup_pin_record(candidates: &[Keys]) -> Result<Option<EndpointId>
 
     let deadline = tokio::time::Instant::now() + LOOKUP_TIMEOUT;
     while let Ok(Some((peer_id, content))) = tokio::time::timeout_at(deadline, rx.recv()).await {
-        let Some(keys) = by_instance.get(&peer_id) else {
+        let Some(key) = by_instance.get(&peer_id) else {
             continue;
         };
-        if let Some(node_id) = pin_record::decrypt_pin_payload(keys, &content) {
+        if let Some(node_id) = pin_record::decrypt_pin_payload(key, &content) {
             return Ok(Some(node_id));
         }
     }
     Ok(None)
+}
+
+pub async fn resolve_pin(canonical_pin: &str) -> Result<EndpointId> {
+    let candidates = pin_record::candidate_keys(canonical_pin).await?;
+    lookup_pin_record(&candidates)
+        .await
+        .context("LAN PIN lookup failed")?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no sender found for that PIN on this network; the PIN may have expired"
+            )
+        })
 }
 
 #[cfg(test)]
@@ -80,23 +87,23 @@ mod tests {
 
     #[test]
     fn instance_is_a_valid_dns_label() {
-        let keys = Keys::generate();
-        let instance = instance_name(&keys);
+        let key = pin_record::record_key("7K7P29QXMT", 42).unwrap();
+        let instance = key.instance_name();
         assert_eq!(instance.len(), 32);
         assert!(instance.chars().all(|character| character.is_ascii_hexdigit()));
     }
 
     #[test]
     fn record_fits_a_txt_attribute() {
-        let keys = Keys::generate();
+        let key = pin_record::record_key("7K7P29QXMT", 42).unwrap();
         let node_id = iroh::SecretKey::generate().public();
-        let content = pin_record::encrypt_pin_payload(&keys, &node_id).unwrap();
+        let content = pin_record::encrypt_pin_payload(&key, &node_id).unwrap();
         assert!(TXT_KEY.len() + content.len() < 254);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn advertised_record_can_be_found() {
-        let pin = "BK7P29QXMV";
+        let pin = "7K7P29QXMT";
         let node_id = iroh::SecretKey::generate().public();
         let candidates = pin_record::candidate_keys(pin).await.unwrap();
         let _advert = advertise_pin_record(

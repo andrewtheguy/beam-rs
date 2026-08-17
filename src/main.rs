@@ -13,8 +13,6 @@ mod iroh;
 use iroh::{receiver as iroh_receiver, sender as iroh_sender};
 use iroh::common::EndpointReadiness;
 use iroh::sender::PairingMode;
-use auth::pin::PinMode;
-use auth::rendezvous::PinChannel;
 
 mod onion;
 use onion::{receiver as onion_receiver, sender as onion_sender};
@@ -41,16 +39,15 @@ enum Commands {
         #[arg(long)]
         folder: bool,
 
-        /// Use a single 120-second PIN advertised over Nostr and the LAN
-        #[arg(long)]
+        /// Use a single 120-second PIN for serverless LAN discovery
+        #[arg(long, conflicts_with = "serverless")]
         pin: bool,
 
         /// Custom relay server URLs (for iroh transport)
         #[arg(long)]
         relay_url: Vec<String>,
 
-        /// Use no third-party services: copy/paste a direct-address code, or
-        /// combine with --pin for LAN-only mDNS PIN discovery.
+        /// Use no third-party services with a copied direct-address code
         #[arg(long)]
         serverless: bool,
 
@@ -129,13 +126,6 @@ fn main() {
 }
 
 async fn async_main() -> Result<()> {
-    // Install the process-level rustls CryptoProvider. The iroh transport passes
-    // its own provider explicitly, but the Nostr relay path (WebSocket TLS) relies
-    // on rustls' global default, which newer rustls versions no longer auto-select.
-    // Without this, `--pin` panics with "Could not automatically determine the
-    // process-level CryptoProvider". Ignore the error if one is already installed.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
     let cli = Cli::parse();
     init_tracing();
     run(cli.command).await
@@ -169,14 +159,13 @@ fn prompt_pairing_input() -> Result<String> {
             continue;
         }
 
-        // Looks like a PIN attempt (right length and character set) but its mode
-        // marker or checksum is invalid. Re-prompt instead of treating it as a
-        // beam code.
+        // Looks like a PIN attempt (right length and character set) but its
+        // checksum is invalid. Re-prompt instead of treating it as a beam code.
         if crate::auth::pin::looks_like_pin(&input)
             && crate::auth::pin::normalize_pin(&input).is_none()
         {
             ui::info(
-                "That looks like a PIN but its mode marker or checksum is invalid — please re-check it.",
+                "That looks like a PIN but its checksum is invalid — please re-check it.",
             );
             initial = input;
             continue;
@@ -218,12 +207,7 @@ async fn run(command: Commands) -> Result<()> {
                 );
             }
             let pairing_mode = if pin {
-                let channel = if serverless {
-                    PinChannel::LanOnly
-                } else {
-                    PinChannel::NostrAndLan
-                };
-                PairingMode::Pin(channel)
+                PairingMode::Pin
             } else if serverless {
                 PairingMode::Serverless
             } else {
@@ -246,26 +230,13 @@ async fn run(command: Commands) -> Result<()> {
             let input = prompt_pairing_input()?;
 
             if let Some(pin) = crate::auth::pin::normalize_pin(&input) {
-                let (channel, readiness, status) = match crate::auth::pin::pin_mode(&pin) {
-                    Some(PinMode::Normal) => (
-                        PinChannel::NostrAndLan,
-                        EndpointReadiness::RelayPreferred,
-                        "Searching for the sender via Nostr and the local network...",
-                    ),
-                    Some(PinMode::Serverless) => (
-                        PinChannel::LanOnly,
-                        EndpointReadiness::LanDirect,
-                        "Searching for the sender on the local network...",
-                    ),
-                    None => unreachable!("normalized PIN has a valid mode marker"),
-                };
-                ui::status(status);
-                let node_id = crate::auth::rendezvous::resolve_pin(&pin, channel).await?;
+                ui::status("Searching for the sender on the local network...");
+                let node_id = crate::auth::lan::resolve_pin(&pin).await?;
                 ui::status("Sender found!");
                 iroh_receiver::receive_paired(
                     ::iroh::EndpointAddr::new(node_id),
                     pin,
-                    readiness,
+                    EndpointReadiness::LanDirect,
                     output,
                     no_resume,
                 )
