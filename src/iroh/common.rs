@@ -93,62 +93,6 @@ impl AsyncWrite for IrohDuplex<'_> {
     }
 }
 
-/// An owned duplex wrapper that takes ownership of send/recv streams.
-///
-/// This is needed for `run_receiver_transfer` which requires `'static` lifetime
-/// due to spawn_blocking usage in folder transfers.
-pub struct OwnedIrohDuplex {
-    send: SendStream,
-    recv: RecvStream,
-}
-
-impl OwnedIrohDuplex {
-    /// Create a new owned duplex from separate send and receive streams.
-    pub fn new(send: SendStream, recv: RecvStream) -> Self {
-        Self { send, recv }
-    }
-
-    /// Consume the duplex and return the underlying send stream.
-    /// Used to call finish() after transfer completes.
-    pub fn into_send_stream(self) -> SendStream {
-        self.send
-    }
-}
-
-impl AsyncRead for OwnedIrohDuplex {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.recv).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for OwnedIrohDuplex {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.send)
-            .poll_write(cx, buf)
-            .map_err(io::Error::other)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.send)
-            .poll_flush(cx)
-            .map_err(io::Error::other)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.send)
-            .poll_shutdown(cx)
-            .map_err(io::Error::other)
-    }
-}
-
 /// Format connection path info for display.
 fn format_paths(paths: &PathList<'_>) -> String {
     if paths.is_empty() {
@@ -215,7 +159,7 @@ pub fn watch_connection_paths(conn: &Connection) -> PathWatcherGuard {
 }
 
 /// Application-Layer Protocol Negotiation identifier for beam transfers.
-pub const ALPN: &[u8] = b"beam-transfer/2";
+pub const ALPN: &[u8] = b"beam-transfer/3";
 
 /// Parse relay URL strings into a RelayMode.
 ///
@@ -250,23 +194,28 @@ fn print_relay_info(relay_urls: &[String]) {
     }
 }
 
-/// Create an iroh endpoint configured for sending (accepts incoming connections).
-///
-/// Sets up local mDNS discovery.
-/// The endpoint is configured with ALPN for beam transfers.
-/// Multiple relay URLs provide automatic failover based on latency.
-///
+/// How an endpoint is reached and when it counts as ready.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndpointReadiness {
+    /// Beam-code mode: relays plus n0 DNS/pkarr and mDNS; ready once online.
     RelayOnline,
+    /// PIN and serverless modes: relays and internet discovery disabled, mDNS
+    /// only; ready once a direct address is known.
     LanDirect,
 }
 
 const ENDPOINT_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub async fn create_sender_endpoint(
+/// Create an iroh endpoint and wait until it is ready for `readiness`.
+///
+/// Multiple relay URLs provide automatic failover based on latency. Relay URLs
+/// are ignored for `LanDirect`. `accept_incoming` registers the beam ALPN so the
+/// sender can accept connections; the receiver instead names the ALPN when it
+/// connects.
+pub async fn create_endpoint(
     relay_urls: Vec<String>,
     readiness: EndpointReadiness,
+    accept_incoming: bool,
 ) -> Result<Endpoint> {
     let relay_mode = if readiness == EndpointReadiness::LanDirect {
         RelayMode::Disabled
@@ -280,32 +229,41 @@ pub async fn create_sender_endpoint(
     // only makes the ring backend available, it does not wire it in, and
     // rustls' global `install_default()` is not consulted.
     let crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
-    let builder = Endpoint::builder(presets::Empty)
+    let mut builder = Endpoint::builder(presets::Empty)
         .crypto_provider(crypto_provider)
-        .relay_mode(relay_mode)
-        .alpns(vec![ALPN.to_vec()]);
-
-    let builder = if readiness == EndpointReadiness::LanDirect {
-        builder.address_lookup(MdnsAddressLookup::builder())
-    } else {
-        builder
+        .relay_mode(relay_mode);
+    if readiness == EndpointReadiness::RelayOnline {
+        builder = builder
             .address_lookup(PkarrPublisher::n0_dns())
-            .address_lookup(DnsAddressLookup::n0_dns())
-            .address_lookup(MdnsAddressLookup::builder())
-    };
+            .address_lookup(DnsAddressLookup::n0_dns());
+    }
+    builder = builder.address_lookup(MdnsAddressLookup::builder());
+    if accept_incoming {
+        builder = builder.alpns(vec![ALPN.to_vec()]);
+    }
 
     let endpoint = builder
         .bind()
         .await
         .context("Failed to create endpoint")?;
 
-    wait_for_endpoint_ready(&endpoint, readiness).await?;
+    let ready = async {
+        match readiness {
+            EndpointReadiness::RelayOnline => endpoint.online().await,
+            EndpointReadiness::LanDirect => wait_for_direct_address(&endpoint).await,
+        }
+    };
+    if tokio::time::timeout(ENDPOINT_READY_TIMEOUT, ready).await.is_err() {
+        anyhow::bail!(
+            "Endpoint failed to become ready after {}s",
+            ENDPOINT_READY_TIMEOUT.as_secs()
+        );
+    }
 
     Ok(endpoint)
 }
 
 /// Wait until the endpoint has discovered at least one direct (IP) address.
-///
 async fn wait_for_direct_address(endpoint: &Endpoint) {
     let mut watcher = endpoint.watch_addr();
     loop {
@@ -331,69 +289,6 @@ pub async fn wait_for_direct_address_hint(endpoint: &Endpoint) {
             ENDPOINT_READY_TIMEOUT.as_secs()
         );
     }
-}
-
-async fn wait_for_endpoint_ready(
-    endpoint: &Endpoint,
-    readiness: EndpointReadiness,
-) -> Result<()> {
-    let ready = async {
-        match readiness {
-            EndpointReadiness::RelayOnline => endpoint.online().await,
-            EndpointReadiness::LanDirect => wait_for_direct_address(endpoint).await,
-        }
-    };
-    match tokio::time::timeout(ENDPOINT_READY_TIMEOUT, ready).await {
-        Ok(()) => Ok(()),
-        Err(_) => anyhow::bail!(
-            "Endpoint failed to become ready after {}s",
-            ENDPOINT_READY_TIMEOUT.as_secs()
-        ),
-    }
-}
-
-/// Create an iroh endpoint configured for receiving (connects to sender).
-///
-/// Sets up local mDNS discovery.
-/// Does not set ALPN as the receiver specifies it when connecting.
-/// Multiple relay URLs provide automatic failover based on latency.
-///
-pub async fn create_receiver_endpoint(
-    relay_urls: Vec<String>,
-    readiness: EndpointReadiness,
-) -> Result<Endpoint> {
-    let relay_mode = if readiness == EndpointReadiness::LanDirect {
-        RelayMode::Disabled
-    } else {
-        print_relay_info(&relay_urls);
-        parse_relay_mode(relay_urls)?
-    };
-
-    // iroh 1.0 requires the crypto provider to be set explicitly on the
-    // builder when starting from the `Empty` preset — the `tls-ring` feature
-    // only makes the ring backend available, it does not wire it in, and
-    // rustls' global `install_default()` is not consulted.
-    let crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
-    let builder = Endpoint::builder(presets::Empty)
-        .crypto_provider(crypto_provider)
-        .relay_mode(relay_mode);
-
-    let builder = if readiness == EndpointReadiness::LanDirect {
-        builder.address_lookup(MdnsAddressLookup::builder())
-    } else {
-        builder
-            .address_lookup(PkarrPublisher::n0_dns())
-            .address_lookup(DnsAddressLookup::n0_dns())
-            .address_lookup(MdnsAddressLookup::builder())
-    };
-
-    let endpoint = builder
-        .bind()
-        .await
-        .context("Failed to create endpoint")?;
-
-    wait_for_endpoint_ready(&endpoint, readiness).await?;
-    Ok(endpoint)
 }
 
 /// Create a MinimalAddr from a full EndpointAddr.

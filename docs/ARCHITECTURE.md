@@ -41,21 +41,23 @@ sequenceDiagram
 
     Note over Sender,Receiver: iroh selects best path (Direct > Relay)
 
-    Sender->>Receiver: 6. QUIC handshake (ALPN "beam-transfer/2")
+    Sender->>Receiver: 6. QUIC handshake (ALPN "beam-transfer/3")
     Receiver->>Sender: 7. SPAKE2 proof + authenticated receiver NodeID
     Note over Sender: Compare claimed NodeID with Connection::remote_id(); reject mismatches
     Sender->>Receiver: 8. Mutual key confirmation
-    Sender->>Receiver: 9. Send Encrypted Header (AES-256-GCM)
-    Note over Receiver: Check file existence, prompt user
+    Sender->>Receiver: 9. Send Encrypted Header (filename, size, xxHash64)
+    Note over Receiver: Check file existence, look for resumable partial file
 
-    alt User accepts transfer
+    alt Fresh transfer
         Receiver->>Sender: 10. Send Encrypted PROCEED
-    else User declines or file conflict
+    else Matching partial file
+        Receiver->>Sender: 10. Send Encrypted RESUME:<offset>
+    else User cancels on existing file
         Receiver->>Sender: 10. Send Encrypted ABORT
         Note over Sender,Receiver: Transfer cancelled
     end
 
-    loop 16KB chunks
+    loop 16KB chunks from offset
         Sender->>Receiver: Send Encrypted Chunk (QUIC Stream)
     end
 
@@ -91,7 +93,7 @@ sequenceDiagram
     Note over Sender: User shares beam code out-of-band
 
     Receiver->>Receiver: 4. Parse serverless payload
-    Receiver->>Sender: 5. Connect directly to embedded IPs (mDNS fallback) over QUIC (ALPN beam-transfer/2)
+    Receiver->>Sender: 5. Connect directly to embedded IPs (mDNS fallback) over QUIC (ALPN beam-transfer/3)
     Sender->>Receiver: 6. SPAKE2 using the copied session secret
 
     Note over Sender,Receiver: From here identical to iroh mode
@@ -107,7 +109,7 @@ sequenceDiagram
 - **Relay**: iroh relays (DERP) - automatically used if direct P2P connection fails.
 - **Failover**: Uses multiple relays for redundancy; monitors latency to select the best path.
 - **Connection**: "Hole punching" attempts to establish a direct UDP connection; falls back to relay if NATs are strict.
-- **Protocol**: ALPN `beam-transfer/2`.
+- **Protocol**: ALPN `beam-transfer/3`.
 - **PIN Support**: No. PIN pairing is a separate LAN-only, relayless mode.
 - **Encryption**: Always AES-256-GCM encrypted at the application layer, plus QUIC/TLS encryption.
 
@@ -161,7 +163,7 @@ LAN-only.
 All beam codes include a creation timestamp and are validated against a TTL to prevent replay attacks and stale session establishment.
 
 **Implementation:**
-- **Token Version**: v5 beam tokens include a `created_at` Unix timestamp
+- **Token Version**: v7 beam tokens include a `created_at` Unix timestamp
 - **TTL Duration**: 60 minutes (`SESSION_TTL_SECS = 3600`)
 - **Clock Skew**: Allows up to 60 seconds into the future to handle minor clock drift
 
@@ -194,14 +196,15 @@ Control signals are encrypted messages sent over the same length-prefixed framin
 - **PROCEED**: receiver accepts transfer
 - **ABORT**: receiver declines transfer
 - **ACK**: receiver confirms all expected bytes were received
-- **RESUME:<offset>**: receiver requests resume from a byte offset (files only)
+- **RESUME:<offset>**: receiver requests resume from a byte offset
 
 These signals are not tied to chunk numbers and use fresh random nonces like all other encrypted messages.
 
 ### Resumable File On-Disk Flow
 
-Resumable state is only used for **file** transfers (not folders) when resume is enabled.
-The receiver `--no-resume` flag disables this state for file transfers.
+Resumable state is used unless the receiver passes `--no-resume`, which always
+starts fresh and removes the partial file on Ctrl+C. A partial file is resumed
+only when its recorded checksum and size match the incoming header.
 
 - Receiver writes incoming bytes to a resume temp file in the target directory:
   `<final_path>.beam-rs.partial`
@@ -231,12 +234,13 @@ corresponds to ~64 TiB per transfer.
 
 Before data transfer begins, the receiver validates the incoming transfer:
 
-1. **Sender** sends encrypted file header containing filename, size, and transfer type
+1. **Sender** sends encrypted file header: `filename_len (2 bytes BE) || filename || file_size (8 bytes BE) || xxHash64 checksum (8 bytes BE)`
 2. **Receiver** checks:
    - If file already exists at destination
    - If user wants to proceed (interactive prompt)
 3. **Receiver** responds with:
    - **PROCEED**: Accept transfer, sender begins sending data chunks
+   - **RESUME:<offset>**: Accept and continue a matching partial download
    - **ABORT**: Decline transfer, connection is closed
 
 This handshake prevents:

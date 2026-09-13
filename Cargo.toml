@@ -1,6 +1,6 @@
 [package]
 name = "beam-rs"
-version = "0.0.29"
+version = "0.0.30"
 edition = "2024"
 
 [lib]
@@ -21,7 +21,6 @@ base64 = "0.22"
 rand = "0.8"
 futures = "0.3"
 log = "0.4"
-tempfile = "3"
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -30,11 +29,8 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 spake2 = "0.4"
 
-# File handling / hashing
-tar = "0.4"
-walkdir = "2"
+# Hashing
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
-crc32fast = "1.4"
 
 # Interactive line prompts
 rustyline = "18"
@@ -44,6 +40,9 @@ iroh = "1.0.2"
 iroh-mdns-address-lookup = "0.4.0"
 swarm-discovery = "0.6.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 strip = true

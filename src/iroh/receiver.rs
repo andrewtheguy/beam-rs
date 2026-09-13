@@ -1,33 +1,31 @@
 use anyhow::{Context, Result};
 use iroh::endpoint::{
-    AuthenticationError, ConnectError, ConnectWithOptsError, ConnectingError,
+    AuthenticationError, ConnectError, ConnectWithOptsError, ConnectingError, Connection,
 };
-use iroh::EndpointAddr;
+use iroh::{Endpoint, EndpointAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::timeout;
 
 use super::common::{
-    ALPN, EndpointReadiness, OwnedIrohDuplex, create_receiver_endpoint,
-    is_connection_error_network_related, minimal_addr_to_endpoint, watch_connection_paths,
+    ALPN, EndpointReadiness, IrohDuplex, create_endpoint, is_connection_error_network_related,
+    minimal_addr_to_endpoint, watch_connection_paths,
 };
-use crate::auth::PairingAuth;
 use crate::auth::spake2::handshake_as_initiator;
-use beam_rs::core::transfer::run_receiver_transfer;
 use beam_rs::core::beam::parse_code;
+use beam_rs::core::transfer::run_receiver_transfer;
 use beam_rs::ui;
 
-/// Receive a file or folder using a beam code.
-/// Auto-detects whether it's a file or folder transfer based on the header.
-///
-pub async fn receive(
-    code: &str,
-    output_dir: Option<PathBuf>,
-    no_resume: bool,
-) -> Result<()> {
+/// Close an established connection with an error reason and shut down the endpoint.
+async fn close_with_error(conn: &Connection, endpoint: &Endpoint, reason: &[u8]) {
+    conn.close(2u32.into(), reason);
+    endpoint.close().await;
+}
+
+/// Receive a file using a beam code.
+pub async fn receive(code: &str, output_dir: Option<PathBuf>, no_resume: bool) -> Result<()> {
     ui::status("Parsing beam code...");
 
-    // Parse the beam code
     let token = parse_code(code).context("Failed to parse beam code")?;
     let minimal_addr = token
         .addr
@@ -38,15 +36,11 @@ pub async fn receive(
     let relay_urls = minimal_addr.relay_urls.clone();
     let addr = minimal_addr_to_endpoint(&minimal_addr)
         .context("Failed to parse endpoint address")?;
-    let pairing_auth = PairingAuth {
-        secret: token.key,
-        session_id: addr.id.to_string(),
-    };
 
     receive_internal(
         addr,
         relay_urls,
-        pairing_auth,
+        &token.key,
         EndpointReadiness::RelayOnline,
         output_dir,
         no_resume,
@@ -54,21 +48,20 @@ pub async fn receive(
     .await
 }
 
-/// Receive through a PIN or serverless pairing code. The session secret is proven
-/// with SPAKE2 and its result becomes the content-encryption key.
+/// Receive through a PIN or serverless pairing code. Relays and internet
+/// discovery are disabled; the session secret is proven with SPAKE2 and its
+/// result becomes the content-encryption key.
 pub async fn receive_paired(
     addr: EndpointAddr,
-    secret: String,
-    readiness: EndpointReadiness,
+    secret: &str,
     output_dir: Option<PathBuf>,
     no_resume: bool,
 ) -> Result<()> {
-    let session_id = addr.id.to_string();
     receive_internal(
         addr,
         Vec::new(),
-        PairingAuth { secret, session_id },
-        readiness,
+        secret,
+        EndpointReadiness::LanDirect,
         output_dir,
         no_resume,
     )
@@ -78,24 +71,20 @@ pub async fn receive_paired(
 async fn receive_internal(
     addr: EndpointAddr,
     relay_urls: Vec<String>,
-    pairing_auth: PairingAuth,
+    secret: &str,
     readiness: EndpointReadiness,
     output_dir: Option<PathBuf>,
     no_resume: bool,
 ) -> Result<()> {
+    let session_id = addr.id.to_string();
+
     ui::status("Pairing data valid. Connecting to sender...");
 
-    // Create iroh endpoint
-    let endpoint = create_receiver_endpoint(relay_urls, readiness).await?;
+    let endpoint = create_endpoint(relay_urls, readiness, false).await?;
     let local_id = endpoint.addr().id.to_string();
 
-    // Connect to sender
     let conn = endpoint.connect(addr, ALPN).await.map_err(|e| {
-        // Determine if this is a relay/network connectivity error by inspecting
-        // the structured error types from iroh/quinn
-        let is_relay_or_network_error = is_relay_or_network_error(&e);
-
-        if is_relay_or_network_error {
+        if is_relay_or_network_error(&e) {
             anyhow::anyhow!(
                 "Failed to connect to sender: {}\n\n\
                  Relay connection failed. Check network connectivity and firewall settings.",
@@ -113,96 +102,72 @@ async fn receive_internal(
         }
     })?;
 
-    // Print connection info
-    let remote_id = conn.remote_id();
     ui::status("Connected!");
-    ui::status(&format!("Remote ID: {}", remote_id));
+    ui::status(&format!("Remote ID: {}", conn.remote_id()));
 
     let path_watcher = watch_connection_paths(&conn);
 
     const ACCEPT_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
-    // Accept bi-directional stream
     let accept_result = timeout(ACCEPT_STREAM_TIMEOUT, conn.accept_bi())
         .await
         .context("Timed out waiting for sender to open stream")
         .and_then(|r| r.context("Failed to accept stream"));
-    let (send_stream, mut recv_stream) = match accept_result {
+    let (mut send_stream, mut recv_stream) = match accept_result {
         Ok(streams) => streams,
         Err(e) => {
-            // Same established-connection cleanup as the SPAKE2/handshake paths:
-            // the connection is up, so signal the peer with a close code and reason
-            // instead of relying on Drop.
             drop(path_watcher);
-            conn.close(2u32.into(), b"failed to accept stream");
-            endpoint.close().await;
+            close_with_error(&conn, &endpoint, b"failed to accept stream").await;
             return Err(e);
         }
     };
 
+    // Read the "ready" byte sent by the sender to confirm the stream is established.
+    // See sender.rs for why this is needed (QUIC stream materialization).
+    let mut ready = [0u8; 1];
+    recv_stream
+        .read_exact(&mut ready)
+        .await
+        .context("Failed to read ready byte")?;
+    if ready[0] != 0x01 {
+        drop(path_watcher);
+        close_with_error(&conn, &endpoint, b"invalid ready byte").await;
+        anyhow::bail!("Invalid ready byte: expected 0x01, got 0x{:02x}", ready[0]);
+    }
+
     // Prove possession of the one-time secret and bind it to this endpoint ID
     // before accepting any transfer metadata.
-    let (key, send_stream) = {
-        // Read the "ready" byte sent by the sender to confirm the stream is established.
-        // See sender.rs for why this is needed (QUIC stream materialization).
-        let mut ready = [0u8; 1];
-        recv_stream.read_exact(&mut ready).await.context("Failed to read ready byte")?;
-        if ready[0] != 0x01 {
-            // Same cleanup as the handshake-failure path below: the connection is
-            // already established, so gracefully signal the peer and close the
-            // endpoint rather than relying on Drop.
-            drop(path_watcher);
-            conn.close(2u32.into(), b"invalid ready byte");
-            endpoint.close().await;
-            anyhow::bail!("Invalid ready byte: expected 0x01, got 0x{:02x}", ready[0]);
+    ui::status("Performing SPAKE2 authentication...");
+    let mut duplex = IrohDuplex::new(&mut send_stream, &mut recv_stream);
+    let handshake_result = timeout(
+        Duration::from_secs(30),
+        handshake_as_initiator(&mut duplex, secret, &session_id, &local_id),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("SPAKE2 handshake timed out"))
+    .and_then(|r| r.map_err(|e| anyhow::anyhow!("SPAKE2 handshake failed: {}", e)));
+    let key = match handshake_result {
+        Ok(key) => {
+            ui::status("SPAKE2 authentication successful!");
+            key
         }
-        ui::status("Performing SPAKE2 authentication...");
-        let mut send_stream_mut = send_stream;
-        let mut duplex =
-            super::common::IrohDuplex::new(&mut send_stream_mut, &mut recv_stream);
-        let handshake_result = timeout(
-            Duration::from_secs(30),
-            handshake_as_initiator(
-                &mut duplex,
-                &pairing_auth.secret,
-                &pairing_auth.session_id,
-                &local_id,
-            ),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("SPAKE2 handshake timed out"))
-        .and_then(|r| r.map_err(|e| anyhow::anyhow!("SPAKE2 handshake failed: {}", e)));
-        match handshake_result {
-            Ok(derived_key) => {
-                ui::status("SPAKE2 authentication successful!");
-                (derived_key, send_stream_mut)
-            }
-            Err(e) => {
-                drop(path_watcher);
-                conn.close(2u32.into(), b"handshake failed");
-                endpoint.close().await;
-                return Err(e);
-            }
+        Err(e) => {
+            drop(path_watcher);
+            close_with_error(&conn, &endpoint, b"handshake failed").await;
+            return Err(e);
         }
     };
 
-    // Create owned duplex for unified transfer logic
-    let duplex = OwnedIrohDuplex::new(send_stream, recv_stream);
+    run_receiver_transfer(&mut duplex, &key, output_dir, no_resume).await?;
 
-    // Run unified receiver transfer
-    let (_path, duplex) = run_receiver_transfer(duplex, key, output_dir, no_resume).await?;
-
-    // Stop path watcher before cleanup
     drop(path_watcher);
 
     // Finish send stream and wait for acknowledgment (QUIC-specific)
     // This ensures the ACK message is fully delivered before closing the connection.
-    let mut send_stream = duplex.into_send_stream();
     send_stream
         .finish()
         .context("Failed to finish send stream")?;
 
-    // Wait for the peer to acknowledge our FIN (with timeout to avoid hanging)
     const STREAM_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
     match timeout(STREAM_CLOSE_TIMEOUT, send_stream.stopped()).await {
         Ok(Ok(_)) => {}
@@ -218,29 +183,20 @@ async fn receive_internal(
         }
     }
 
-    // Close connection gracefully with timeout to avoid hanging indefinitely
     const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
-    // Initiate connection close (non-async, just signals intent to close)
     conn.close(0u32.into(), b"transfer complete");
 
-    // Wait for the connection to fully close, with timeout
-    match timeout(CLOSE_TIMEOUT, conn.closed()).await {
-        Ok(_) => {}
-        Err(_) => {
-            log::warn!(
-                "Waiting for connection close timed out after {:?}",
-                CLOSE_TIMEOUT
-            );
-        }
+    if timeout(CLOSE_TIMEOUT, conn.closed()).await.is_err() {
+        log::warn!(
+            "Waiting for connection close timed out after {:?}",
+            CLOSE_TIMEOUT
+        );
     }
 
     // Always close the endpoint, even if connection close timed out
-    match timeout(CLOSE_TIMEOUT, endpoint.close()).await {
-        Ok(_) => {}
-        Err(_) => {
-            log::warn!("Endpoint close timed out after {:?}", CLOSE_TIMEOUT);
-        }
+    if timeout(CLOSE_TIMEOUT, endpoint.close()).await.is_err() {
+        log::warn!("Endpoint close timed out after {:?}", CLOSE_TIMEOUT);
     }
 
     ui::status("Connection closed.");
@@ -254,13 +210,11 @@ async fn receive_internal(
 /// errors that suggest relay failures, network unreachability, or similar issues
 /// that warrant specific error messaging.
 fn is_relay_or_network_error(e: &ConnectError) -> bool {
-    // First, try to match on structured error variants
     match e {
         ConnectError::Connect { source, .. } => match source {
             ConnectWithOptsError::NoAddress { .. } => return true,
             ConnectWithOptsError::Noq { source, .. } => {
                 // Quinn's ConnectError doesn't expose network-level issues directly
-                // Check if the error message indicates connection failure
                 let msg = source.to_string().to_lowercase();
                 if msg.contains("no route") || msg.contains("unreachable") {
                     return true;
@@ -287,8 +241,7 @@ fn is_relay_or_network_error(e: &ConnectError) -> bool {
     }
 
     // Fallback: check error message as a last resort for cases not covered
-    // by the structured matching above. This is a best-effort heuristic for
-    // error conditions that iroh/quinn don't expose as distinct variants.
+    // by the structured matching above.
     let err_str = e.to_string().to_lowercase();
     err_str.contains("relay")
         || err_str.contains("no route")
@@ -307,7 +260,6 @@ fn is_authentication_error_relay_related(e: &AuthenticationError) -> bool {
         AuthenticationError::NoAlpn { .. } => true,
         // RemoteId errors are certificate/identity validation issues - not relay-related
         AuthenticationError::RemoteId { .. } => false,
-        // Future variants: conservatively treat as not relay-related
         _ => false,
     }
 }

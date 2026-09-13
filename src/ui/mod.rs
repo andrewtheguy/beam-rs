@@ -1,4 +1,4 @@
-//! User-facing terminal output and prompts shared by all transports.
+//! User-facing terminal output and prompts.
 
 use anyhow::{Result, anyhow};
 use rustyline::DefaultEditor;
@@ -83,22 +83,6 @@ pub fn prompt_file_exists(path: &Path) -> Result<FileExistsChoice> {
         "r" | "rename" => Ok(FileExistsChoice::Rename),
         _ => Ok(FileExistsChoice::Cancel),
     }
-}
-
-/// Confirm sending a large, non-resumable folder archive.
-pub fn confirm_large_folder(size: u64, name: &str) -> Result<bool> {
-    println!(
-        "\n⚠️  Warning: {} is large ({}).",
-        name,
-        format_bytes(size)
-    );
-    println!("Folder transfers are NOT resumable. If interrupted, you must start over.");
-    print!("Continue anyway? [y/N]: ");
-    std::io::stdout().flush()?;
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    Ok(input.trim().eq_ignore_ascii_case("y"))
 }
 
 /// Read a line, optionally pre-filling the editable input buffer.
