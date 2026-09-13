@@ -21,6 +21,9 @@ struct Cli {
     command: Commands,
 }
 
+/// Help heading for the mutually exclusive `send` mode flags.
+const MODE_HEADING: &str = "Mode (pick at most one; default: iroh with relay fallback)";
+
 #[derive(Subcommand)]
 enum Commands {
     /// Send a file via iroh
@@ -28,17 +31,17 @@ enum Commands {
         /// Path to the file
         path: PathBuf,
 
-        /// Use a single 120-second PIN for serverless LAN discovery
-        #[arg(long, conflicts_with = "serverless")]
+        /// Serverless iroh mode: no third-party services, copied direct-address code
+        #[arg(long, group = "mode", help_heading = MODE_HEADING)]
+        serverless: bool,
+
+        /// Serverless PIN mode: a single 120-second PIN for LAN discovery
+        #[arg(long, group = "mode", help_heading = MODE_HEADING)]
         pin: bool,
 
-        /// Custom relay server URLs (embedded in the beam code for the receiver)
-        #[arg(long)]
+        /// Custom relay server URLs, embedded in the beam code (default iroh mode only)
+        #[arg(long, conflicts_with_all = ["serverless", "pin"])]
         relay_url: Vec<String>,
-
-        /// Use no third-party services with a copied direct-address code
-        #[arg(long)]
-        serverless: bool,
     },
 
     /// Receive a file using a beam code or PIN
@@ -149,15 +152,10 @@ async fn run(command: Commands) -> Result<()> {
             serverless,
         } => {
             validate_path(&path)?;
-            if (pin || serverless) && !relay_url.is_empty() {
-                anyhow::bail!(
-                    "--relay-url is only supported by the default beam-code mode; PIN discovery does not carry custom relay configuration and serverless mode disables relays"
-                );
-            }
-            let pairing_mode = if pin {
-                PairingMode::Pin
-            } else if serverless {
+            let pairing_mode = if serverless {
                 PairingMode::Serverless
+            } else if pin {
+                PairingMode::Pin
             } else {
                 PairingMode::BeamCode
             };

@@ -123,8 +123,9 @@ beam-rs receive
 
 For the same serverless transport with a short mDNS PIN instead of a copied
 code, use `beam-rs send --pin` as described above.
-`--pin` and `--serverless` are alternate pairing methods and cannot be combined.
-Neither can be combined with `--relay-url` because relays are disabled.
+`send` takes at most one mode flag (`--serverless` or `--pin`); with none it uses
+the default iroh mode. `--relay-url` applies only to the default mode, because
+the other two disable relays.
 
 ### Receiving
 
