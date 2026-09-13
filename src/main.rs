@@ -9,15 +9,12 @@ use beam_rs::ui;
 mod auth;
 
 mod iroh;
-use iroh::{receiver as iroh_receiver, sender as iroh_sender};
-use iroh::common::EndpointReadiness;
 use iroh::sender::PairingMode;
-
-mod cli;
+use iroh::{receiver as iroh_receiver, sender as iroh_sender};
 
 #[derive(Parser)]
 #[command(name = "beam-rs")]
-#[command(about = "Secure peer-to-peer file transfer")]
+#[command(about = "Secure, resumable peer-to-peer file transfer")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -26,20 +23,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Send a file or folder via iroh (default, recommended)
+    /// Send a file via iroh
     Send {
-        /// Path to file or folder
+        /// Path to the file
         path: PathBuf,
-
-        /// Send a folder (creates tar archive)
-        #[arg(long)]
-        folder: bool,
 
         /// Use a single 120-second PIN for serverless LAN discovery
         #[arg(long, conflicts_with = "serverless")]
         pin: bool,
 
-        /// Custom relay server URLs (for iroh transport)
+        /// Custom relay server URLs (embedded in the beam code for the receiver)
         #[arg(long)]
         relay_url: Vec<String>,
 
@@ -48,7 +41,7 @@ enum Commands {
         serverless: bool,
     },
 
-    /// Receive a file or folder using a beam code or PIN
+    /// Receive a file using a beam code or PIN
     Receive {
         /// Output directory (default: current directory)
         #[arg(short, long)]
@@ -60,26 +53,14 @@ enum Commands {
     },
 }
 
-/// Validate path exists and matches folder flag
-fn validate_path(path: &Path, folder: bool) -> Result<()> {
+/// Validate path exists and is a regular file
+fn validate_path(path: &Path) -> Result<()> {
     if !path.exists() {
         anyhow::bail!("Path not found: {}", path.display());
     }
-
-    if folder {
-        if !path.is_dir() {
-            anyhow::bail!(
-                "--folder specified but path is not a directory: {}",
-                path.display()
-            );
-        }
-    } else if !path.is_file() {
-        anyhow::bail!(
-            "Path is not a regular file: {}. If you intended a directory, use --folder.",
-            path.display()
-        );
+    if !path.is_file() {
+        anyhow::bail!("Path is not a regular file: {}", path.display());
     }
-
     Ok(())
 }
 
@@ -97,7 +78,6 @@ fn validate_output_dir(output: &Option<PathBuf>) -> Result<()> {
 }
 
 fn main() {
-    // Run the async main and handle errors
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -105,12 +85,10 @@ fn main() {
         .block_on(async_main());
 
     if let Err(e) = result {
-        // Check if this was an interrupt (Ctrl+C)
         if is_interrupted(&e) {
             // Exit with 128 + SIGINT (2) = 130, standard Unix convention
             std::process::exit(130);
         }
-        // Print error and exit with failure code
         eprintln!("Error: {:?}", e);
         std::process::exit(1);
     }
@@ -136,7 +114,6 @@ fn init_tracing() {
 }
 
 /// Prompt for a beam code or PIN, re-prompting on empty input.
-///
 fn prompt_pairing_input() -> Result<String> {
     let mut initial = String::new();
     loop {
@@ -152,12 +129,8 @@ fn prompt_pairing_input() -> Result<String> {
 
         // Looks like a PIN attempt (right length and character set) but its
         // checksum is invalid. Re-prompt instead of treating it as a beam code.
-        if crate::auth::pin::looks_like_pin(&input)
-            && crate::auth::pin::normalize_pin(&input).is_none()
-        {
-            ui::info(
-                "That looks like a PIN but its checksum is invalid — please re-check it.",
-            );
+        if auth::pin::looks_like_pin(&input) && auth::pin::normalize_pin(&input).is_none() {
+            ui::info("That looks like a PIN but its checksum is invalid — please re-check it.");
             initial = input;
             continue;
         }
@@ -171,12 +144,11 @@ async fn run(command: Commands) -> Result<()> {
     match command {
         Commands::Send {
             path,
-            folder,
             pin,
             relay_url,
             serverless,
         } => {
-            validate_path(&path, folder)?;
+            validate_path(&path)?;
             if (pin || serverless) && !relay_url.is_empty() {
                 anyhow::bail!(
                     "--relay-url is only supported by the default beam-code mode; PIN discovery does not carry custom relay configuration and serverless mode disables relays"
@@ -189,43 +161,28 @@ async fn run(command: Commands) -> Result<()> {
             } else {
                 PairingMode::BeamCode
             };
-            if folder {
-                iroh_sender::send_folder(&path, relay_url, pairing_mode).await?;
-            } else {
-                iroh_sender::send_file(&path, relay_url, pairing_mode).await?;
-            }
+            iroh_sender::send_file(&path, relay_url, pairing_mode).await?;
         }
 
-        Commands::Receive {
-            output,
-            no_resume,
-        } => {
-            // Validate output directory if provided
+        Commands::Receive { output, no_resume } => {
             validate_output_dir(&output)?;
 
             let input = prompt_pairing_input()?;
 
-            if let Some(pin) = crate::auth::pin::normalize_pin(&input) {
+            if let Some(pin) = auth::pin::normalize_pin(&input) {
                 ui::status("Searching for the sender on the local network...");
-                let node_id = crate::auth::lan::resolve_pin(&pin).await?;
+                let node_id = auth::lan::resolve_pin(&pin).await?;
                 ui::status("Sender found!");
                 iroh_receiver::receive_paired(
                     ::iroh::EndpointAddr::new(node_id),
-                    pin,
-                    EndpointReadiness::LanDirect,
+                    &pin,
                     output,
                     no_resume,
                 )
                 .await?;
-            } else if let Some(serverless) = crate::auth::serverless_code::decode(&input)? {
-                iroh_receiver::receive_paired(
-                    serverless.addr,
-                    serverless.secret,
-                    EndpointReadiness::LanDirect,
-                    output,
-                    no_resume,
-                )
-                .await?;
+            } else if let Some(serverless) = auth::serverless_code::decode(&input)? {
+                iroh_receiver::receive_paired(serverless.addr, &serverless.secret, output, no_resume)
+                    .await?;
             } else {
                 iroh_receiver::receive(&input, output, no_resume).await?;
             }

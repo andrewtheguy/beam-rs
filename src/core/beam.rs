@@ -3,7 +3,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Current token format version
-pub const CURRENT_VERSION: u8 = 6;
+pub const CURRENT_VERSION: u8 = 7;
 
 /// TTL for beam sessions in seconds (1 hour)
 pub const SESSION_TTL_SECS: u64 = 3600;

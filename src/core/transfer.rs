@@ -1,14 +1,14 @@
 use anyhow::{Context, Result};
-use std::future::Future;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::core::crypto::{CHUNK_SIZE, decrypt, encrypt};
-use crate::core::folder::{create_tar_archive, print_tar_creation_info};
-use crate::core::resume::calculate_file_checksum;
+use crate::core::resume::{
+    ResumeMetadata, calculate_file_checksum, check_resume, create_resume_file,
+    finalize_resume_file, get_data_offset, temp_file_path, update_resume_metadata,
+};
 use crate::ui;
 
 /// Error returned when a transfer is interrupted by Ctrl+C.
@@ -31,79 +31,35 @@ pub fn is_interrupted(err: &anyhow::Error) -> bool {
     err.downcast_ref::<Interrupted>().is_some()
 }
 
-/// Check if a path contains traversal patterns.
-///
-/// Returns `true` if the path contains dangerous patterns like:
-/// - Starts with ".." (e.g., "../etc/passwd")
-/// - Contains "/.." (e.g., "foo/../bar")
-/// - Contains "\\.." (Windows path traversal)
-///
-/// Allows legitimate names like "file..txt" or "archive..tar.gz".
-/// Use this for paths that may legitimately contain separators (e.g., tar entries).
-pub fn contains_path_traversal(path: &str) -> bool {
-    path.starts_with("..") || path.contains("/..") || path.contains("\\..")
-}
-
 /// Check if a filename contains invalid characters.
 ///
 /// Returns `true` if the name contains:
 /// - Path traversal patterns (starts with "..")
 /// - Path separators (`/` or `\`)
 /// - Null bytes
-///
-/// Use this for single-component names (filenames, folder names).
 pub fn is_invalid_filename(name: &str) -> bool {
     name.starts_with("..") || name.contains('/') || name.contains('\\') || name.contains('\0')
 }
 
-/// Soft limit for large file transfers (100MB)
-pub const LARGE_FILE_THRESHOLD: u64 = 100 * 1024 * 1024;
-
-/// Transfer type identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum TransferType {
-    File = 0,
-    Folder = 1, // Tar archive
-}
-
-impl TransferType {
-    pub fn from_u8(value: u8) -> Result<Self> {
-        match value {
-            0 => Ok(TransferType::File),
-            1 => Ok(TransferType::Folder),
-            _ => anyhow::bail!("Unknown transfer type: {}", value),
-        }
-    }
-}
-
 /// Transfer protocol header
-/// Format: transfer_type (1 byte) || filename_len (2 bytes) || filename || file_size (8 bytes) || checksum (8 bytes)
+/// Format: filename_len (2 bytes) || filename || file_size (8 bytes) || checksum (8 bytes)
 pub struct FileHeader {
-    pub transfer_type: TransferType,
     pub filename: String,
     pub file_size: u64,
-    /// xxhash64 checksum of the file (0 for folders)
+    /// xxhash64 checksum of the file, used to validate resume state
     pub checksum: u64,
 }
 
 impl FileHeader {
-    pub fn new(
-        transfer_type: TransferType,
-        filename: String,
-        file_size: u64,
-        checksum: u64,
-    ) -> Self {
+    pub fn new(filename: String, file_size: u64, checksum: u64) -> Self {
         Self {
-            transfer_type,
             filename,
             file_size,
             checksum,
         }
     }
 
-    /// Serialize header for transmission
-    /// Format: transfer_type (1 byte) || filename_len (2 bytes) || filename || file_size (8 bytes) || checksum (8 bytes)
+    /// Serialize header for transmission.
     ///
     /// Returns an error if the filename exceeds the protocol limit (65535 bytes).
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
@@ -115,9 +71,8 @@ impl FileHeader {
                 u16::MAX
             );
         }
-        let mut bytes = Vec::with_capacity(1 + 2 + filename_bytes.len() + 8 + 8);
+        let mut bytes = Vec::with_capacity(2 + filename_bytes.len() + 8 + 8);
 
-        bytes.push(self.transfer_type as u8);
         bytes.extend_from_slice(&(filename_bytes.len() as u16).to_be_bytes());
         bytes.extend_from_slice(filename_bytes);
         bytes.extend_from_slice(&self.file_size.to_be_bytes());
@@ -128,18 +83,17 @@ impl FileHeader {
 
     /// Deserialize header from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        if data.len() < 3 {
+        if data.len() < 2 {
             anyhow::bail!("Header data too short");
         }
 
-        let transfer_type = TransferType::from_u8(data[0])?;
-        let filename_len = u16::from_be_bytes([data[1], data[2]]) as usize;
-        // Need: 1 (type) + 2 (filename_len) + filename + 8 (file_size) + 8 (checksum)
-        if data.len() < 3 + filename_len + 16 {
+        let filename_len = u16::from_be_bytes([data[0], data[1]]) as usize;
+        // Need: 2 (filename_len) + filename + 8 (file_size) + 8 (checksum)
+        if data.len() < 2 + filename_len + 16 {
             anyhow::bail!("Header data truncated");
         }
 
-        let filename = String::from_utf8(data[3..3 + filename_len].to_vec())
+        let filename = String::from_utf8(data[2..2 + filename_len].to_vec())
             .context("Invalid filename encoding")?;
 
         // Validate filename doesn't contain path traversal or invalid characters
@@ -150,7 +104,7 @@ impl FileHeader {
             anyhow::bail!("Invalid filename: empty");
         }
 
-        let size_start = 3 + filename_len;
+        let size_start = 2 + filename_len;
         let file_size = u64::from_be_bytes(data[size_start..size_start + 8].try_into().unwrap());
 
         let checksum_start = size_start + 8;
@@ -158,7 +112,6 @@ impl FileHeader {
             u64::from_be_bytes(data[checksum_start..checksum_start + 8].try_into().unwrap());
 
         Ok(Self {
-            transfer_type,
             filename,
             file_size,
             checksum,
@@ -166,177 +119,90 @@ impl FileHeader {
     }
 }
 
-/// Send a header over the stream (unencrypted, relies on QUIC/TLS)
-/// Format: header_len (4 bytes) || header_data
-pub async fn send_header<W: AsyncWriteExt + Unpin>(
+/// Write one encrypted, length-prefixed message.
+/// Format: len (4 bytes BE) || nonce || ciphertext || tag
+async fn send_encrypted<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
-    header: &FileHeader,
+    key: &[u8; 32],
+    plaintext: &[u8],
 ) -> Result<()> {
-    let header_bytes = header.to_bytes().context("Failed to serialize header")?;
-
-    // Write length prefix
-    let len = header_bytes.len() as u32;
-    writer.write_all(&len.to_be_bytes()).await?;
-
-    // Write header
-    writer.write_all(&header_bytes).await?;
-
+    let encrypted = encrypt(key, plaintext)?;
+    writer
+        .write_all(&(encrypted.len() as u32).to_be_bytes())
+        .await?;
+    writer.write_all(&encrypted).await?;
     Ok(())
 }
 
-/// Send an encrypted header over the stream (uses chunk_num 0)
-/// Format: header_len (4 bytes) || encrypted_header
+/// Read and decrypt one length-prefixed message, rejecting lengths above `max_len`
+/// before allocating (prevents OOM from malicious peers).
+async fn recv_encrypted<R: AsyncReadExt + Unpin>(
+    reader: &mut R,
+    key: &[u8; 32],
+    max_len: usize,
+    what: &str,
+) -> Result<Vec<u8>> {
+    let mut len_buf = [0u8; 4];
+    reader
+        .read_exact(&mut len_buf)
+        .await
+        .with_context(|| format!("Failed to read {what} length"))?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+
+    if len == 0 {
+        anyhow::bail!("Invalid {what}: length is zero");
+    }
+    if len > max_len {
+        anyhow::bail!("{what} size {len} exceeds maximum {max_len} bytes");
+    }
+
+    let mut encrypted = vec![0u8; len];
+    reader
+        .read_exact(&mut encrypted)
+        .await
+        .with_context(|| format!("Failed to read {what} data"))?;
+
+    decrypt(key, &encrypted)
+}
+
+// Maximum header size (64KB - headers contain filename + metadata, this is generous)
+const MAX_HEADER_SIZE: usize = 64 * 1024;
+
+// Maximum chunk size (CHUNK_SIZE + reasonable overhead for encryption tags/nonce)
+const MAX_CHUNK_SIZE: usize = CHUNK_SIZE + 256;
+
+/// Maximum size for encrypted control signals.
+/// Control signals are small (e.g., "ACK", "PROCEED", "RESUME:"+8 bytes) plus encryption overhead
+const MAX_CONTROL_SIGNAL_SIZE: usize = 1024;
+
+/// Send an encrypted header over the stream
 pub async fn send_encrypted_header<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     key: &[u8; 32],
     header: &FileHeader,
 ) -> Result<()> {
     let header_bytes = header.to_bytes().context("Failed to serialize header")?;
-    let encrypted = encrypt(key, &header_bytes)?;
-
-    // Write length prefix
-    let len = encrypted.len() as u32;
-    writer.write_all(&len.to_be_bytes()).await?;
-
-    // Write encrypted header
-    writer.write_all(&encrypted).await?;
-
-    // Flush to ensure the header is sent immediately
+    send_encrypted(writer, key, &header_bytes).await?;
     writer.flush().await?;
-
     Ok(())
 }
 
-// Maximum header size (64KB - headers contain filename + metadata, this is generous)
-const MAX_HEADER_SIZE: usize = 64 * 1024;
-
-/// Receive a header from the stream (unencrypted, relies on QUIC/TLS)
-pub async fn recv_header<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<FileHeader> {
-    // Read length prefix
-    let mut len_buf = [0u8; 4];
-    reader
-        .read_exact(&mut len_buf)
-        .await
-        .context("Failed to read header length")?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-
-    // Validate header size to prevent huge allocations from malicious peers
-    if len == 0 {
-        anyhow::bail!("Invalid header: length is zero");
-    }
-    if len > MAX_HEADER_SIZE {
-        anyhow::bail!(
-            "Header size {} exceeds maximum {} bytes",
-            len,
-            MAX_HEADER_SIZE
-        );
-    }
-
-    // Read header
-    let mut data = vec![0u8; len];
-    reader
-        .read_exact(&mut data)
-        .await
-        .context("Failed to read header data")?;
-
-    FileHeader::from_bytes(&data)
-}
-
-/// Receive and decrypt a header from the stream (uses chunk_num 0)
+/// Receive and decrypt a header from the stream
 pub async fn recv_encrypted_header<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     key: &[u8; 32],
 ) -> Result<FileHeader> {
-    // Read length prefix
-    let mut len_buf = [0u8; 4];
-    reader
-        .read_exact(&mut len_buf)
-        .await
-        .context("Failed to read header length")?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-
-    // Validate header size to prevent huge allocations from malicious peers
-    if len == 0 {
-        anyhow::bail!("Invalid header: length is zero");
-    }
-    if len > MAX_HEADER_SIZE {
-        anyhow::bail!(
-            "Header size {} exceeds maximum {} bytes",
-            len,
-            MAX_HEADER_SIZE
-        );
-    }
-
-    // Read encrypted header
-    let mut encrypted = vec![0u8; len];
-    reader
-        .read_exact(&mut encrypted)
-        .await
-        .context("Failed to read header data")?;
-
-    // Decrypt
-    let decrypted = decrypt(key, &encrypted)?;
-
-    FileHeader::from_bytes(&decrypted)
-}
-
-/// Send a chunk over the stream (unencrypted, relies on QUIC/TLS)
-/// Format: chunk_len (4 bytes) || chunk_data
-pub async fn send_chunk<W: AsyncWriteExt + Unpin>(writer: &mut W, data: &[u8]) -> Result<()> {
-    // Write length prefix
-    let len = data.len() as u32;
-    writer.write_all(&len.to_be_bytes()).await?;
-
-    // Write data
-    writer.write_all(data).await?;
-
-    Ok(())
+    let data = recv_encrypted(reader, key, MAX_HEADER_SIZE, "header").await?;
+    FileHeader::from_bytes(&data)
 }
 
 /// Send an encrypted chunk over the stream
-/// Format: chunk_len (4 bytes) || encrypted_chunk
 pub async fn send_encrypted_chunk<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     key: &[u8; 32],
     data: &[u8],
 ) -> Result<()> {
-    let encrypted = encrypt(key, data)?;
-
-    // Write length prefix
-    let len = encrypted.len() as u32;
-    writer.write_all(&len.to_be_bytes()).await?;
-
-    // Write encrypted data
-    writer.write_all(&encrypted).await?;
-
-    Ok(())
-}
-
-// Maximum chunk size (CHUNK_SIZE + reasonable overhead for encryption tags/nonce)
-const MAX_CHUNK_SIZE: usize = CHUNK_SIZE + 256;
-
-/// Receive a chunk from the stream (unencrypted, relies on QUIC/TLS)
-pub async fn recv_chunk<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
-    // Read length prefix
-    let mut len_buf = [0u8; 4];
-    reader
-        .read_exact(&mut len_buf)
-        .await
-        .context("Failed to read chunk length")?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-
-    if len > MAX_CHUNK_SIZE {
-        anyhow::bail!("Chunk size {} exceeds maximum {}", len, MAX_CHUNK_SIZE);
-    }
-
-    // Read data
-    let mut data = vec![0u8; len];
-    reader
-        .read_exact(&mut data)
-        .await
-        .context("Failed to read chunk data")?;
-
-    Ok(data)
+    send_encrypted(writer, key, data).await
 }
 
 /// Receive and decrypt a chunk from the stream
@@ -344,32 +210,7 @@ pub async fn recv_encrypted_chunk<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     key: &[u8; 32],
 ) -> Result<Vec<u8>> {
-    // Read length prefix
-    let mut len_buf = [0u8; 4];
-    reader
-        .read_exact(&mut len_buf)
-        .await
-        .context("Failed to read chunk length")?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-
-    // Validate chunk size to prevent OOM from malicious length prefix
-    if len > MAX_CHUNK_SIZE {
-        anyhow::bail!(
-            "Encrypted chunk size {} exceeds maximum {}",
-            len,
-            MAX_CHUNK_SIZE
-        );
-    }
-
-    // Read encrypted data
-    let mut encrypted = vec![0u8; len];
-    reader
-        .read_exact(&mut encrypted)
-        .await
-        .context("Failed to read chunk data")?;
-
-    // Decrypt
-    decrypt(key, &encrypted)
+    recv_encrypted(reader, key, MAX_CHUNK_SIZE, "chunk").await
 }
 
 /// Calculate number of chunks for a file
@@ -414,37 +255,14 @@ pub fn format_resume_progress(offset: u64, file_size: u64) -> String {
     )
 }
 
-/// Prompt user for confirmation if folder archive exceeds soft limit.
-/// Only used for folders since they are NOT resumable. Files are resumable and don't need this warning.
-/// Returns Ok(true) to proceed, Ok(false) to cancel.
-///
-/// This function is async and runs blocking I/O in a separate thread to avoid
-/// blocking the Tokio runtime.
-pub async fn confirm_large_folder_transfer(file_size: u64, filename: &str) -> Result<bool> {
-    if file_size <= LARGE_FILE_THRESHOLD {
-        return Ok(true);
-    }
-
-    // Capture values needed in the blocking closure
-    let filename = filename.to_string();
-
-    tokio::task::spawn_blocking(move || ui::confirm_large_folder(file_size, &filename))
-        .await
-        .context("Blocking task panicked")?
-}
-
 /// Result of preparing a file for transfer
 pub struct PreparedFile {
     pub file: File,
-    pub filename: String,
-    pub file_size: u64,
-    /// xxhash64 checksum of the file
-    pub checksum: u64,
+    pub header: FileHeader,
 }
 
-/// Prepare a file for sending: validate, calculate checksum, confirm if large, and open.
-/// Returns None if user cancels the transfer.
-pub async fn prepare_file_for_send(file_path: &Path) -> Result<Option<PreparedFile>> {
+/// Prepare a file for sending: read metadata, calculate checksum, and open.
+pub async fn prepare_file_for_send(file_path: &Path) -> Result<PreparedFile> {
     let metadata = tokio::fs::metadata(file_path)
         .await
         .context("Failed to read file metadata")?;
@@ -467,186 +285,17 @@ pub async fn prepare_file_for_send(file_path: &Path) -> Result<Option<PreparedFi
         .await
         .context("Failed to calculate file checksum")?;
 
-    // No large file warning needed - file transfers are resumable
-
-    // Open file
     let file = File::open(file_path).await.context("Failed to open file")?;
 
-    Ok(Some(PreparedFile {
+    Ok(PreparedFile {
         file,
-        filename,
-        file_size,
-        checksum,
-    }))
-}
-
-/// Result of preparing a folder archive for transfer
-pub struct PreparedFolder {
-    pub file: File,
-    pub filename: String,
-    pub file_size: u64,
-    /// Keep temp file alive to prevent deletion until transfer completes
-    pub temp_file: NamedTempFile,
-    /// Checksum (always 0 for folders, as they are not resumable)
-    pub checksum: u64,
-}
-
-/// Prepare a folder for sending: validate, create tar archive, confirm if large, and open.
-/// Returns None if user cancels the transfer.
-pub async fn prepare_folder_for_send(folder_path: &Path) -> Result<Option<PreparedFolder>> {
-    // Validate folder
-    if !folder_path.is_dir() {
-        anyhow::bail!("Not a directory: {}", folder_path.display());
-    }
-
-    let folder_name = folder_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .context("Invalid folder name")?;
-
-    // Validate folder name - must not contain path separators or traversal patterns
-    if is_invalid_filename(folder_name) {
-        anyhow::bail!("Invalid folder name: contains path traversal or invalid characters");
-    }
-    if folder_name.is_empty() {
-        anyhow::bail!("Invalid folder name: empty");
-    }
-
-    ui::info(&format!("📁 Creating tar archive of: {}", folder_name));
-    print_tar_creation_info();
-
-    // Create tar archive
-    let tar_archive = create_tar_archive(folder_path)?;
-    let filename = tar_archive.filename;
-    let file_size = tar_archive.file_size;
-
-    ui::info(&format!(
-        "📦 Archive created: {} ({})",
-        filename,
-        format_bytes(file_size)
-    ));
-
-    // Confirm if archive is large (folders are NOT resumable)
-    if !confirm_large_folder_transfer(file_size, &filename).await? {
-        ui::info("Transfer cancelled.");
-        return Ok(None);
-    }
-
-    // Open tar file
-    let file = File::open(tar_archive.temp_file.path())
-        .await
-        .context("Failed to open tar file")?;
-
-    Ok(Some(PreparedFolder {
-        file,
-        filename,
-        file_size,
-        temp_file: tar_archive.temp_file,
-        checksum: 0, // Folders are not resumable
-    }))
+        header: FileHeader::new(filename, file_size, checksum),
+    })
 }
 
 // ============================================================================
-// Generic sender wrappers (reduce code duplication across transport modes)
+// Control signals (confirmation, resume, acknowledgment)
 // ============================================================================
-
-/// Generic file sender that accepts a closure for mode-specific transfer logic.
-///
-/// This function handles file preparation (validation, size check, confirmation)
-/// and delegates the actual transfer to the provided closure.
-///
-/// # Arguments
-/// * `file_path` - Path to the file to send
-/// * `transfer_fn` - Closure that performs the mode-specific transfer.
-///   Receives: (file, filename, file_size, checksum, transfer_type)
-///
-/// # Returns
-/// * `Ok(())` if transfer completes or user cancels
-/// * `Err` if preparation or transfer fails
-pub async fn send_file_with<F, Fut>(file_path: &Path, transfer_fn: F) -> Result<()>
-where
-    F: FnOnce(File, String, u64, u64, TransferType) -> Fut,
-    Fut: Future<Output = Result<()>>,
-{
-    let prepared = match prepare_file_for_send(file_path).await? {
-        Some(p) => p,
-        None => return Ok(()),
-    };
-
-    transfer_fn(
-        prepared.file,
-        prepared.filename,
-        prepared.file_size,
-        prepared.checksum,
-        TransferType::File,
-    )
-    .await
-}
-
-/// Generic folder sender that accepts a closure for mode-specific transfer logic.
-///
-/// This function handles folder preparation (tar archive creation, size check,
-/// confirmation) and interrupt handling with temp file cleanup.
-///
-/// # Arguments
-/// * `folder_path` - Path to the folder to send
-/// * `transfer_fn` - Closure that performs the mode-specific transfer.
-///   Receives: (file, filename, file_size, checksum, transfer_type)
-///
-/// # Returns
-/// * `Ok(())` if transfer completes or user cancels
-/// * `Err(Interrupted)` if user presses Ctrl+C
-/// * `Err` if preparation or transfer fails
-pub async fn send_folder_with<F, Fut>(folder_path: &Path, transfer_fn: F) -> Result<()>
-where
-    F: FnOnce(File, String, u64, u64, TransferType) -> Fut,
-    Fut: Future<Output = Result<()>> + Send,
-{
-    let prepared = match prepare_folder_for_send(folder_path).await? {
-        Some(p) => p,
-        None => return Ok(()),
-    };
-
-    // Set up cleanup handler for Ctrl+C
-    let temp_path = prepared.temp_file.path().to_path_buf();
-    let cleanup_handler = setup_temp_file_cleanup_handler(temp_path.clone());
-
-    // Run transfer with interrupt handling
-    let result = tokio::select! {
-        result = transfer_fn(
-            prepared.file,
-            prepared.filename,
-            prepared.file_size,
-            0, // Folders are not resumable
-            TransferType::Folder,
-        ) => result,
-        _ = cleanup_handler.shutdown_rx => {
-            // Graceful shutdown requested - clean up and return Interrupted error
-            cleanup_handler.cleanup_path.lock().await.take();
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err(Interrupted.into());
-        }
-    };
-
-    // Clear cleanup path (transfer completed or failed normally)
-    cleanup_handler.cleanup_path.lock().await.take();
-
-    result
-}
-
-// ============================================================================
-// Confirmation handshake protocol (file exists check before data transfer)
-// ============================================================================
-
-// Legacy plaintext signals (kept for reference, use encrypted versions below)
-/// Signal sent by receiver to indicate transfer should proceed
-pub const PROCEED_SIGNAL: &[u8] = b"PROCEED";
-/// Signal sent by receiver to abort transfer (e.g., file exists and user declined)
-pub const ABORT_SIGNAL: &[u8] = b"ABORT\0\0"; // Padded to 7 bytes like PROCEED
-
-/// Maximum size for encrypted control signals (prevents OOM from malicious length prefixes)
-/// Control signals are small (e.g., "ACK", "PROCEED", "RESUME:"+8 bytes) plus encryption overhead
-const MAX_CONTROL_SIGNAL_SIZE: usize = 1024;
 
 /// Control signal types for encrypted handshake
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -658,51 +307,20 @@ pub enum ControlSignal {
     Resume(u64),
 }
 
-/// Send encrypted PROCEED signal
-pub async fn send_proceed<W: AsyncWriteExt + Unpin>(writer: &mut W, key: &[u8; 32]) -> Result<()> {
-    let encrypted = encrypt(key, b"PROCEED")?;
-    let len = encrypted.len() as u32;
-    writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&encrypted).await?;
-    writer.flush().await?;
-    Ok(())
-}
-
-/// Send encrypted ABORT signal
-pub async fn send_abort<W: AsyncWriteExt + Unpin>(writer: &mut W, key: &[u8; 32]) -> Result<()> {
-    let encrypted = encrypt(key, b"ABORT")?;
-    let len = encrypted.len() as u32;
-    writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&encrypted).await?;
-    writer.flush().await?;
-    Ok(())
-}
-
-/// Send encrypted ACK signal
-pub async fn send_ack<W: AsyncWriteExt + Unpin>(writer: &mut W, key: &[u8; 32]) -> Result<()> {
-    let encrypted = encrypt(key, b"ACK")?;
-    let len = encrypted.len() as u32;
-    writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&encrypted).await?;
-    writer.flush().await?;
-    Ok(())
-}
-
-/// Send encrypted RESUME signal with byte offset
-/// Format: "RESUME:" || offset(8 bytes BE)
-pub async fn send_resume<W: AsyncWriteExt + Unpin>(
+/// Send an encrypted control signal.
+/// RESUME is encoded as "RESUME:" || offset (8 bytes BE).
+pub async fn send_control<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     key: &[u8; 32],
-    offset: u64,
+    signal: &ControlSignal,
 ) -> Result<()> {
-    let mut payload = Vec::with_capacity(15); // "RESUME:" + 8 bytes
-    payload.extend_from_slice(b"RESUME:");
-    payload.extend_from_slice(&offset.to_be_bytes());
-
-    let encrypted = encrypt(key, &payload)?;
-    let len = encrypted.len() as u32;
-    writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&encrypted).await?;
+    let payload = match signal {
+        ControlSignal::Proceed => b"PROCEED".to_vec(),
+        ControlSignal::Abort => b"ABORT".to_vec(),
+        ControlSignal::Ack => b"ACK".to_vec(),
+        ControlSignal::Resume(offset) => [b"RESUME:".as_slice(), &offset.to_be_bytes()].concat(),
+    };
+    send_encrypted(writer, key, &payload).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -712,45 +330,17 @@ pub async fn recv_control<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     key: &[u8; 32],
 ) -> Result<ControlSignal> {
-    // Read length prefix
-    let mut len_buf = [0u8; 4];
-    reader
-        .read_exact(&mut len_buf)
+    let data = recv_encrypted(reader, key, MAX_CONTROL_SIGNAL_SIZE, "control signal")
         .await
-        .context("Failed to read control signal length")?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-
-    // Validate length to prevent OOM from malicious peers
-    if len == 0 {
-        anyhow::bail!("Invalid control signal: zero length");
-    }
-    if len > MAX_CONTROL_SIGNAL_SIZE {
-        anyhow::bail!(
-            "Control signal too large: {} bytes (max {})",
-            len,
-            MAX_CONTROL_SIGNAL_SIZE
-        );
-    }
-
-    // Read encrypted data (safe to allocate after bounds check)
-    let mut encrypted = vec![0u8; len];
-    reader
-        .read_exact(&mut encrypted)
-        .await
-        .context("Failed to read control signal data")?;
-
-    // Decrypt and check plaintext
-    let data = decrypt(key, &encrypted).context("Failed to decrypt control signal")?;
+        .context("Failed to receive control signal")?;
 
     match data.as_slice() {
         b"PROCEED" => Ok(ControlSignal::Proceed),
         b"ABORT" => Ok(ControlSignal::Abort),
         b"ACK" => Ok(ControlSignal::Ack),
         _ if data.starts_with(b"RESUME:") && data.len() == 15 => {
-            // Parse offset from "RESUME:" || offset(8 bytes BE)
             let offset_bytes: [u8; 8] = data[7..15].try_into().unwrap();
-            let offset = u64::from_be_bytes(offset_bytes);
-            Ok(ControlSignal::Resume(offset))
+            Ok(ControlSignal::Resume(u64::from_be_bytes(offset_bytes)))
         }
         _ => anyhow::bail!("Unknown control signal"),
     }
@@ -798,56 +388,9 @@ pub fn find_available_filename(path: &Path) -> PathBuf {
     parent.join(format!("{}_{}{}", stem, timestamp, ext))
 }
 
-/// Prompt user for choice when file already exists.
-/// Returns the user's choice (overwrite, rename, or cancel).
-pub fn prompt_file_exists(path: &Path) -> Result<FileExistsChoice> {
-    ui::prompt_file_exists(path)
-}
-
 // ============================================================================
-// Shared resume components for sender and receiver
+// Data transfer with resume support
 // ============================================================================
-
-use crate::core::resume::{
-    ResumeMetadata, check_resume, create_resume_file, finalize_resume_file as resume_finalize,
-    get_data_offset, temp_file_path, update_resume_metadata,
-};
-use std::io::{Seek, SeekFrom};
-
-/// Result from handling receiver's control signal
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResumeResponse {
-    /// Fresh transfer from beginning
-    Fresh,
-    /// Resume from byte offset
-    Resume { offset: u64, starting_chunk: u64 },
-    /// Transfer aborted by receiver
-    Aborted,
-}
-
-/// Handle receiver's response to header (PROCEED, RESUME, or ABORT).
-/// Returns ResumeResponse indicating how to proceed.
-pub async fn handle_receiver_response<R: AsyncReadExt + Unpin>(
-    reader: &mut R,
-    key: &[u8; 32],
-) -> Result<ResumeResponse> {
-    match recv_control(reader, key).await? {
-        ControlSignal::Proceed => Ok(ResumeResponse::Fresh),
-        ControlSignal::Resume(offset) => {
-            let starting_chunk = offset / CHUNK_SIZE as u64 + 1;
-            ui::status(&format!(
-                "   Resuming from byte offset {} (chunk {})",
-                offset, starting_chunk
-            ));
-            Ok(ResumeResponse::Resume {
-                offset,
-                starting_chunk,
-            })
-        }
-        ControlSignal::Abort => Ok(ResumeResponse::Aborted),
-        other => anyhow::bail!("Unexpected control signal: {:?}", other),
-    }
-}
 
 /// Send file data starting from given offset.
 /// Handles chunk encryption, progress reporting.
@@ -873,7 +416,6 @@ pub async fn send_file_data<R: AsyncReadExt + Unpin, W: AsyncWriteExt + Unpin>(
         bytes_sent += to_read as u64;
         chunk_num += 1;
 
-        // Progress update
         if progress_interval > 0
             && (chunk_num.is_multiple_of(progress_interval) || bytes_sent == file_size)
         {
@@ -886,7 +428,7 @@ pub async fn send_file_data<R: AsyncReadExt + Unpin, W: AsyncWriteExt + Unpin>(
     }
 
     if progress_interval > 0 {
-        ui::progress_end(); // New line after progress
+        ui::progress_end();
     }
 
     Ok(())
@@ -898,12 +440,8 @@ pub struct FileReceiver {
     pub temp_file: std::fs::File,
     /// Path to the temp file
     pub temp_path: PathBuf,
-    /// Final destination path
-    pub final_path: PathBuf,
     /// Bytes of file data already received
     pub bytes_received: u64,
-    /// Whether this is a resumed transfer
-    pub is_resuming: bool,
     /// Offset in temp file where file data starts (after metadata header)
     pub data_offset: u64,
     /// Metadata for updating progress
@@ -919,82 +457,46 @@ pub fn prepare_file_receiver(
 ) -> Result<(FileReceiver, ControlSignal)> {
     let temp_path = temp_file_path(final_path);
 
-    // Folders are not resumable
-    if header.transfer_type == TransferType::Folder || no_resume || header.checksum == 0 {
-        // Create fresh temp file
-        let metadata = ResumeMetadata {
-            checksum: header.checksum,
-            file_size: header.file_size,
-            bytes_received: 0,
-            filename: header.filename.clone(),
-        };
-        let temp_file = create_resume_file(&temp_path, &metadata)?;
-        let data_offset = get_data_offset();
+    if !no_resume
+        && let Some(resume_check) = check_resume(&temp_path, header.checksum, header.file_size)?
+    {
+        let bytes_received = resume_check.metadata.bytes_received;
+        ui::status(&format!(
+            "   Found partial download: {} of {} received",
+            format_bytes(bytes_received),
+            format_bytes(header.file_size)
+        ));
 
         return Ok((
             FileReceiver {
-                temp_file,
+                temp_file: resume_check.file,
                 temp_path,
-                final_path: final_path.to_path_buf(),
-                bytes_received: 0,
-                is_resuming: false,
-                data_offset,
-                metadata,
+                bytes_received,
+                data_offset: resume_check.data_offset,
+                metadata: resume_check.metadata,
             },
-            ControlSignal::Proceed,
+            ControlSignal::Resume(bytes_received),
         ));
     }
 
-    // Check for existing temp file that can be resumed
-    match check_resume(&temp_path, header.checksum, header.file_size)? {
-        Some(resume_check) => {
-            // Valid temp file found, resume transfer
-            let bytes_received = resume_check.metadata.bytes_received;
-            let data_offset = resume_check.data_offset;
-            ui::status(&format!(
-                "   Found partial download: {} of {} received",
-                format_bytes(bytes_received),
-                format_bytes(header.file_size)
-            ));
+    let metadata = ResumeMetadata {
+        checksum: header.checksum,
+        file_size: header.file_size,
+        bytes_received: 0,
+        filename: header.filename.clone(),
+    };
+    let temp_file = create_resume_file(&temp_path, &metadata)?;
 
-            Ok((
-                FileReceiver {
-                    temp_file: resume_check.file,
-                    temp_path,
-                    final_path: final_path.to_path_buf(),
-                    bytes_received,
-                    is_resuming: true,
-                    data_offset,
-                    metadata: resume_check.metadata,
-                },
-                ControlSignal::Resume(bytes_received),
-            ))
-        }
-        None => {
-            // No valid temp file, start fresh
-            let metadata = ResumeMetadata {
-                checksum: header.checksum,
-                file_size: header.file_size,
-                bytes_received: 0,
-                filename: header.filename.clone(),
-            };
-            let temp_file = create_resume_file(&temp_path, &metadata)?;
-            let data_offset = get_data_offset();
-
-            Ok((
-                FileReceiver {
-                    temp_file,
-                    temp_path,
-                    final_path: final_path.to_path_buf(),
-                    bytes_received: 0,
-                    is_resuming: false,
-                    data_offset,
-                    metadata,
-                },
-                ControlSignal::Proceed,
-            ))
-        }
-    }
+    Ok((
+        FileReceiver {
+            temp_file,
+            temp_path,
+            bytes_received: 0,
+            data_offset: get_data_offset(),
+            metadata,
+        },
+        ControlSignal::Proceed,
+    ))
 }
 
 /// Receive file data and write to temp file.
@@ -1007,9 +509,7 @@ pub async fn receive_file_data<R: AsyncReadExt + Unpin>(
     progress_interval: u64,
     metadata_update_interval: u64,
 ) -> Result<()> {
-    let _total_chunks = num_chunks(file_size);
-    let start_chunk = receiver.bytes_received / CHUNK_SIZE as u64 + 1;
-    let mut chunk_num = start_chunk;
+    let mut chunk_num = receiver.bytes_received / CHUNK_SIZE as u64 + 1;
 
     // Seek to end of data in temp file (for appending)
     receiver.temp_file.seek(SeekFrom::Start(
@@ -1021,7 +521,6 @@ pub async fn receive_file_data<R: AsyncReadExt + Unpin>(
             .await
             .context("Failed to receive chunk")?;
 
-        // Write to temp file
         receiver
             .temp_file
             .write_all(&chunk)
@@ -1039,7 +538,6 @@ pub async fn receive_file_data<R: AsyncReadExt + Unpin>(
             update_resume_metadata(&mut receiver.temp_file, &receiver.metadata)?;
         }
 
-        // Progress update
         if progress_interval > 0
             && (chunk_num.is_multiple_of(progress_interval) || receiver.bytes_received == file_size)
         {
@@ -1048,11 +546,9 @@ pub async fn receive_file_data<R: AsyncReadExt + Unpin>(
     }
 
     if progress_interval > 0 {
-        ui::progress_end(); // New line after progress
+        ui::progress_end();
     }
 
-    // Final metadata update. `update_resume_metadata` writes the header at offset 0
-    // without moving the cursor, so no seek is needed here either.
     receiver.metadata.bytes_received = receiver.bytes_received;
     update_resume_metadata(&mut receiver.temp_file, &receiver.metadata)?;
     receiver.temp_file.flush()?;
@@ -1060,123 +556,34 @@ pub async fn receive_file_data<R: AsyncReadExt + Unpin>(
     Ok(())
 }
 
-/// Finalize a completed transfer: strip metadata header and rename to final path.
-pub fn finalize_file_receiver(receiver: FileReceiver) -> Result<()> {
-    resume_finalize(
-        receiver.temp_file,
-        &receiver.temp_path,
-        &receiver.final_path,
-        receiver.data_offset,
-    )
-}
-
-/// Type alias for cleanup path shared state
-pub type CleanupPath = std::sync::Arc<tokio::sync::Mutex<Option<PathBuf>>>;
-
-/// Result of setting up a cleanup handler
-pub struct CleanupHandler {
-    /// Shared path that can be cleared when cleanup is no longer needed
-    pub cleanup_path: CleanupPath,
-    /// Receiver that completes when Ctrl+C is received and cleanup is done
-    /// Callers should select! on this to handle graceful shutdown
-    pub shutdown_rx: tokio::sync::oneshot::Receiver<()>,
-}
-
-/// Describes what cleanup action to take on Ctrl+C interrupt.
-enum CleanupAction {
-    /// Remove a file unconditionally.
-    RemoveFile,
-    /// Remove a directory recursively.
-    RemoveDir,
-    /// Remove a file only if the transfer is not resumable;
-    /// otherwise preserve it for resume.
-    ResumableFile { is_resumable: bool },
-}
-
-/// Shared helper that wires up Ctrl+C → cleanup → shutdown signal.
-fn spawn_cleanup_handler(path: PathBuf, action: CleanupAction) -> CleanupHandler {
-    let cleanup_path: CleanupPath = std::sync::Arc::new(tokio::sync::Mutex::new(Some(path)));
-    let cleanup_clone = cleanup_path.clone();
+/// Set up a Ctrl+C handler for the receiver's temp file.
+///
+/// Resumable transfers keep the partial file on interrupt; with resume disabled it
+/// is removed. The returned receiver completes once the interrupt has been handled.
+fn setup_interrupt_handler(
+    temp_path: PathBuf,
+    is_resumable: bool,
+) -> tokio::sync::oneshot::Receiver<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
-            match action {
-                CleanupAction::RemoveFile => {
-                    if let Some(path) = cleanup_clone.lock().await.take() {
-                        let _ = tokio::fs::remove_file(&path).await;
-                        ui::status("\nInterrupted. Cleaned up temp file.");
-                    }
-                }
-                CleanupAction::RemoveDir => {
-                    if let Some(path) = cleanup_clone.lock().await.take() {
-                        let _ = tokio::fs::remove_dir_all(&path).await;
-                        ui::status("\nInterrupted. Cleaned up extraction directory.");
-                    }
-                }
-                CleanupAction::ResumableFile { is_resumable } => {
-                    if !is_resumable {
-                        if let Some(path) = cleanup_clone.lock().await.take() {
-                            let _ = tokio::fs::remove_file(&path).await;
-                            ui::status("\nInterrupted. Cleaned up temp file.");
-                        }
-                    } else {
-                        ui::status("\nInterrupted. Partial download saved for resume.");
-                    }
-                }
+            if is_resumable {
+                ui::status("\nInterrupted. Partial download saved for resume.");
+            } else {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                ui::status("\nInterrupted. Cleaned up temp file.");
             }
             let _ = shutdown_tx.send(());
         }
     });
 
-    CleanupHandler {
-        cleanup_path,
-        shutdown_rx,
-    }
-}
-
-/// Set up Ctrl+C handler for resumable transfers.
-/// For resumable transfers, preserves temp file and logs resume message.
-/// For non-resumable transfers, removes temp file on interrupt.
-///
-/// Returns a CleanupHandler with:
-/// - `cleanup_path`: Clear this when transfer completes normally
-/// - `shutdown_rx`: Await or select! on this to detect interrupt and shut down gracefully
-///
-/// The caller should handle the shutdown signal and exit with code 130.
-pub fn setup_resumable_cleanup_handler(temp_path: PathBuf, is_resumable: bool) -> CleanupHandler {
-    spawn_cleanup_handler(temp_path, CleanupAction::ResumableFile { is_resumable })
-}
-
-/// Set up Ctrl+C handler to always clean up a temp file on interrupt.
-/// Used by senders for folder transfers (temp tar archives are not resumable).
-///
-/// Returns a CleanupHandler with:
-/// - `cleanup_path`: Clear this when transfer completes normally
-/// - `shutdown_rx`: Await or select! on this to detect interrupt and shut down gracefully
-///
-/// The caller should handle the shutdown signal and exit with code 130.
-pub fn setup_temp_file_cleanup_handler(temp_path: PathBuf) -> CleanupHandler {
-    spawn_cleanup_handler(temp_path, CleanupAction::RemoveFile)
-}
-
-/// Set up Ctrl+C handler to clean up extraction directory on interrupt.
-/// Used by receivers for folder transfers to clean up partial extraction.
-///
-/// Returns a CleanupHandler with:
-/// - `cleanup_path`: Clear this when extraction completes normally
-/// - `shutdown_rx`: Await or select! on this to detect interrupt and shut down gracefully
-///
-/// The caller should handle the shutdown signal and exit with code 130.
-pub fn setup_dir_cleanup_handler(extract_dir: PathBuf) -> CleanupHandler {
-    spawn_cleanup_handler(extract_dir, CleanupAction::RemoveDir)
+    shutdown_rx
 }
 
 // ============================================================================
-// Unified transfer orchestration functions
+// Transfer orchestration
 // ============================================================================
-
-use tokio::io::AsyncSeekExt;
 
 /// Result of a sender transfer operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1187,25 +594,13 @@ pub enum TransferResult {
     Aborted,
 }
 
-/// Unified sender transfer logic.
+/// Sender transfer logic.
 ///
-/// Handles the complete transfer flow:
 /// 1. Send encrypted header
 /// 2. Wait for receiver response (PROCEED/RESUME/ABORT)
 /// 3. Seek file if resuming
 /// 4. Send file data
-/// 5. Flush stream
-/// 6. Wait for ACK
-///
-/// # Arguments
-/// * `file` - File to send (must be seekable for resume support)
-/// * `stream` - Bidirectional stream for reading and writing
-/// * `key` - 32-byte encryption key
-/// * `header` - File header with metadata
-///
-/// # Returns
-/// * `TransferResult::Success` - Transfer completed successfully
-/// * `TransferResult::Aborted` - Receiver declined the transfer
+/// 5. Wait for ACK
 pub async fn run_sender_transfer<S, F>(
     file: &mut F,
     stream: &mut S,
@@ -1216,38 +611,40 @@ where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
     F: AsyncReadExt + AsyncSeekExt + Unpin,
 {
-    // 1. Send encrypted header
     send_encrypted_header(stream, key, header)
         .await
         .context("Failed to send header")?;
 
-    // 2. Wait for receiver response
     ui::status("Waiting for receiver to confirm...");
-    let start_offset = match handle_receiver_response(stream, key).await? {
-        ResumeResponse::Fresh => {
+    let start_offset = match recv_control(stream, key).await? {
+        ControlSignal::Proceed => {
             ui::status("Receiver ready, starting transfer...");
             0
         }
-        ResumeResponse::Resume { offset, .. } => {
+        ControlSignal::Resume(offset) => {
+            if offset > header.file_size {
+                anyhow::bail!(
+                    "Receiver requested resume offset {} beyond file size {}",
+                    offset,
+                    header.file_size
+                );
+            }
             ui::status(&format_resume_progress(offset, header.file_size));
             file.seek(SeekFrom::Start(offset)).await?;
             offset
         }
-        ResumeResponse::Aborted => {
+        ControlSignal::Abort => {
             ui::status("Receiver declined transfer");
             return Ok(TransferResult::Aborted);
         }
+        other => anyhow::bail!("Unexpected control signal: {:?}", other),
     };
 
-    // 3. Send file data
     send_file_data(file, stream, key, header.file_size, start_offset, 10).await?;
 
-    // 4. Flush stream
     stream.flush().await.context("Failed to flush stream")?;
 
     ui::status("\nTransfer complete!");
-
-    // 5. Wait for ACK
     ui::status("Waiting for receiver to confirm...");
 
     match recv_control(stream, key).await {
@@ -1260,45 +657,25 @@ where
     }
 }
 
-use crate::core::folder::{
-    StreamingReader, extract_tar_archive_returning_reader, get_extraction_dir,
-    print_skipped_entries, print_tar_extraction_info,
-};
-
-/// Unified receiver transfer logic.
+/// Receiver transfer logic.
 ///
-/// Handles the complete transfer flow:
 /// 1. Receive encrypted header
-/// 2. Handle file existence check (for files)
-/// 3. Prepare receiver and send control signal
-/// 4. Receive file/folder data
-/// 5. Finalize transfer
-/// 6. Send ACK
+/// 2. Handle file existence check
+/// 3. Prepare receiver (resume check) and send control signal
+/// 4. Receive file data
+/// 5. Finalize and send ACK
 ///
-/// # Arguments
-/// * `stream` - Bidirectional stream for reading and writing
-/// * `key` - 32-byte encryption key
-/// * `output_dir` - Optional output directory (defaults to current directory)
-/// * `no_resume` - If true, disable resume support
-///
-/// # Returns
-/// * Tuple of (path to received file/directory, stream for cleanup)
-///   The stream is returned so callers can perform transport-specific cleanup
-///   (e.g., QUIC stream finish).
+/// Returns the path of the received file.
 pub async fn run_receiver_transfer<S>(
-    stream: S,
-    key: [u8; 32],
+    stream: &mut S,
+    key: &[u8; 32],
     output_dir: Option<PathBuf>,
     no_resume: bool,
-) -> Result<(PathBuf, S)>
+) -> Result<PathBuf>
 where
-    S: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+    S: AsyncReadExt + AsyncWriteExt + Unpin,
 {
-    // We need to box the stream to allow moving it between async/sync contexts
-    let mut stream = stream;
-
-    // 1. Receive header
-    let header = recv_encrypted_header(&mut stream, &key)
+    let header = recv_encrypted_header(stream, key)
         .await
         .context("Failed to read header")?;
 
@@ -1309,42 +686,11 @@ where
     ));
 
     let output_dir = output_dir.unwrap_or_else(|| PathBuf::from("."));
-
-    // 2. Handle based on transfer type
-    let (final_path, stream) = match header.transfer_type {
-        TransferType::File => {
-            let path =
-                receive_file_transfer_impl(&mut stream, &key, &header, &output_dir, no_resume)
-                    .await?;
-            (path, stream)
-        }
-        TransferType::Folder => {
-            receive_folder_transfer_impl(stream, &key, &header, &output_dir).await?
-        }
-    };
-
-    Ok((final_path, stream))
-}
-
-/// Internal implementation for file transfer reception.
-async fn receive_file_transfer_impl<S>(
-    stream: &mut S,
-    key: &[u8; 32],
-    header: &FileHeader,
-    output_dir: &Path,
-    no_resume: bool,
-) -> Result<PathBuf>
-where
-    S: AsyncReadExt + AsyncWriteExt + Unpin,
-{
-    // Determine final output path
     let output_path = output_dir.join(&header.filename);
 
-    // Check file existence and get final path
-    let final_output_path = if output_path.exists() {
-        // Prompt user in blocking context
+    let final_path = if output_path.exists() {
         let path_clone = output_path.clone();
-        let choice = tokio::task::spawn_blocking(move || prompt_file_exists(&path_clone))
+        let choice = tokio::task::spawn_blocking(move || ui::prompt_file_exists(&path_clone))
             .await
             .context("Prompt task panicked")??;
 
@@ -1353,9 +699,7 @@ where
                 // Handle TOCTOU race: file may have been removed between check and now
                 match tokio::fs::remove_file(&output_path).await {
                     Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        // File was already removed - this is fine
-                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                     Err(e) => {
                         return Err(e).context("Failed to remove existing file");
                     }
@@ -1368,8 +712,7 @@ where
                 new_path
             }
             FileExistsChoice::Cancel => {
-                // Send abort signal to sender
-                send_abort(stream, key)
+                send_control(stream, key, &ControlSignal::Abort)
                     .await
                     .context("Failed to send abort signal")?;
                 anyhow::bail!("Transfer cancelled by user");
@@ -1379,131 +722,43 @@ where
         output_path
     };
 
-    // Prepare file receiver (checks for resume)
     let (mut receiver, control_signal) =
-        prepare_file_receiver(&final_output_path, header, no_resume)?;
+        prepare_file_receiver(&final_path, &header, no_resume)?;
 
-    // Set up cleanup handler
-    let is_resumable = !no_resume && header.checksum != 0;
-    let cleanup_handler = setup_resumable_cleanup_handler(receiver.temp_path.clone(), is_resumable);
+    let shutdown_rx = setup_interrupt_handler(receiver.temp_path.clone(), !no_resume);
 
-    // Send control signal
-    match &control_signal {
-        ControlSignal::Proceed => {
-            send_proceed(stream, key)
-                .await
-                .context("Failed to send proceed signal")?;
-            ui::status("Ready to receive data...");
-        }
+    send_control(stream, key, &control_signal)
+        .await
+        .context("Failed to send control signal")?;
+    match control_signal {
         ControlSignal::Resume(offset) => {
-            send_resume(stream, key, *offset)
-                .await
-                .context("Failed to send resume signal")?;
-            ui::status(&format_resume_progress(*offset, header.file_size));
+            ui::status(&format_resume_progress(offset, header.file_size))
         }
-        other => anyhow::bail!(
-            "Unexpected control signal from prepare_file_receiver: {:?}",
-            other
-        ),
+        _ => ui::status("Ready to receive data..."),
     }
 
-    // Receive file data with interrupt handling
     tokio::select! {
         result = receive_file_data(stream, &mut receiver, key, header.file_size, 10, 100) => {
             result?;
         }
-        _ = cleanup_handler.shutdown_rx => {
-            // Graceful shutdown requested - return Interrupted error
+        _ = shutdown_rx => {
             return Err(Interrupted.into());
         }
     }
 
-    // Clear cleanup and finalize
-    cleanup_handler.cleanup_path.lock().await.take();
-    finalize_file_receiver(receiver)?;
+    finalize_resume_file(
+        receiver.temp_file,
+        &receiver.temp_path,
+        &final_path,
+        receiver.data_offset,
+    )?;
 
     ui::status("\nFile received successfully!");
-    ui::status(&format!("Saved to: {}", final_output_path.display()));
+    ui::status(&format!("Saved to: {}", final_path.display()));
 
-    // Send ACK
-    send_ack(stream, key)
+    send_control(stream, key, &ControlSignal::Ack)
         .await
         .context("Failed to send acknowledgment")?;
 
-    Ok(final_output_path)
-}
-
-/// Internal implementation for folder transfer reception.
-/// Returns (path, stream) so callers can perform transport-specific cleanup.
-async fn receive_folder_transfer_impl<S>(
-    mut stream: S,
-    key: &[u8; 32],
-    header: &FileHeader,
-    output_dir: &Path,
-) -> Result<(PathBuf, S)>
-where
-    S: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
-{
-    ui::status(&format!(
-        "Receiving folder archive: {} ({})",
-        header.filename,
-        format_bytes(header.file_size)
-    ));
-
-    // Folders are not resumable, always send proceed
-    send_proceed(&mut stream, key)
-        .await
-        .context("Failed to send proceed signal")?;
-    ui::status("Ready to receive data...");
-
-    // Determine extraction directory
-    let extract_dir = get_extraction_dir(Some(output_dir.to_path_buf()));
-    std::fs::create_dir_all(&extract_dir).context("Failed to create extraction directory")?;
-
-    // Set up cleanup handler
-    let cleanup_handler = setup_dir_cleanup_handler(extract_dir.clone());
-
-    ui::status(&format!("Extracting to: {}", extract_dir.display()));
-    print_tar_extraction_info();
-
-    // Get runtime handle for blocking in StreamingReader
-    let runtime_handle = tokio::runtime::Handle::current();
-
-    // Create streaming reader that feeds tar extractor
-    let reader = StreamingReader::new(stream, *key, header.file_size, runtime_handle);
-
-    // Run tar extraction in blocking context with interrupt handling
-    let extract_dir_clone = extract_dir.clone();
-    let extraction_result = tokio::select! {
-        result = tokio::task::spawn_blocking(move || {
-            extract_tar_archive_returning_reader(reader, &extract_dir_clone)
-        }) => result.context("Extraction task panicked")?,
-        _ = cleanup_handler.shutdown_rx => {
-            // Graceful shutdown requested - return Interrupted error
-            // Note: cleanup_handler already cleaned up the directory in its signal handler
-            return Err(Interrupted.into());
-        }
-    };
-
-    let (skipped_entries, streaming_reader) = extraction_result?;
-
-    // Report skipped entries
-    print_skipped_entries(&skipped_entries);
-
-    // Clear cleanup
-    cleanup_handler.cleanup_path.lock().await.take();
-
-    ui::status("\nFolder received successfully!");
-    ui::status(&format!("Extracted to: {}", extract_dir.display()));
-
-    // Get stream back and send ACK
-    // Validate that all expected bytes were received before sending ACK
-    let mut stream = streaming_reader
-        .into_inner()
-        .context("Transfer validation failed")?;
-    send_ack(&mut stream, key)
-        .await
-        .context("Failed to send acknowledgment")?;
-
-    Ok((extract_dir, stream))
+    Ok(final_path)
 }

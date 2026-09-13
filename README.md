@@ -3,13 +3,15 @@
 > [!NOTE]
 > This project is still work in progress (0.0.x). No backward compatibility is guaranteed between versions.
 
-A secure, cross-platform, single-binary peer-to-peer file transfer tool with direct connectivity and AES-256-GCM end-to-end encryption.
+A secure, cross-platform, single-binary peer-to-peer tool that sends **one file** at a time, with direct connectivity, resumable downloads, and AES-256-GCM end-to-end encryption.
+
+For folders, use [pTransfer](https://github.com/andrewtheguy/ptransfer).
 
 ## Features
 
 - **End-to-end encryption** - All transfers use AES-256-GCM encryption
-- **Resumable file transfers** - Interrupted file downloads can resume from receiver partial state (folder transfers are streamed tar archives and are not resumable)
-- **File and folder transfers** - Send individual files or entire directories (automatically archived)
+- **Resumable file transfers** - Interrupted downloads resume from the receiver's partial state
+- **Single-file transfers** - Send one regular file per session
 - **Serverless transfers** - direct transfers with no third-party server; a copy/paste code embeds the node ID, a fresh session secret, and discovered direct addresses, with mDNS as a fallback (`beam-rs send --serverless`)
 - **LAN-only PIN pairing** - `--pin` discovers the sender over mDNS without a relay, internet-backed DNS publisher, or copied long code
 - **NAT traversal** - Automatic relay fallback for iroh
@@ -65,11 +67,7 @@ cargo build --release
 *Direct P2P transport using QUIC/TLS with automatic relay fallback. Most reliable for both small and large files. Requires internet access.*
 
 ```bash
-# Send file
 beam-rs send /path/to/file
-
-# Send folder
-beam-rs send /path/to/folder --folder
 ```
 
 #### Custom Iroh Relays
@@ -118,9 +116,6 @@ but typical NAT and firewall rules make a shared LAN the expected environment.
 # Send without a server
 beam-rs send --serverless /path/to/file
 
-# Send folder without a server
-beam-rs send --serverless /path/to/folder --folder
-
 # Receive (paste the printed beam code; it is auto-detected)
 beam-rs receive
 
@@ -147,6 +142,15 @@ beam-rs receive --output /path/to/downloads
 # Disable file resume state for this receive
 beam-rs receive --no-resume
 ```
+
+### Resuming
+
+If a receive is interrupted (Ctrl+C, network loss, crash), the partial download
+is kept next to the destination as `<file>.beam-rs.partial`. Start a new send of
+the same file (any mode) and receive it into the same directory; the receiver
+verifies the partial file against the sender's size and xxHash64 checksum and
+continues from the saved offset. A mismatched partial file is discarded and the
+transfer restarts from zero.
 
 ## Common Use Cases
 
