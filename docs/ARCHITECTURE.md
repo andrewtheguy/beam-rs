@@ -7,8 +7,8 @@ This document provides a detailed walkthrough of the beam-rs implementation.
 beam-rs supports the following transfer modes:
 
 1. **Default Iroh mode** (Recommended) - Direct P2P transfers using iroh's QUIC/TLS stack (automatic relay fallback) via `beam-rs send`. Requires internet access.
-2. **PIN mode** - publishes an encrypted ephemeral node-ID record over LAN mDNS, then authenticates and derives the content key with SPAKE2. Relays and internet discovery are disabled, and a PIN is valid once for 120 seconds.
-3. **Serverless Mode** - uses iroh with relays and internet discovery disabled via `beam-rs send --serverless`. A pasted serverless payload carries the node ID, a 256-bit session secret, and discovered direct addresses.
+2. **Serverless Mode** - uses iroh with relays and internet discovery disabled via `beam-rs send --serverless`. A pasted serverless payload carries the node ID, a 256-bit session secret, and discovered direct addresses.
+3. **Serverless PIN Mode** - the same serverless transport via `beam-rs send --pin`, but instead of a pasted payload it publishes an encrypted ephemeral node-ID record over LAN mDNS, then authenticates and derives the content key with SPAKE2. A PIN is valid once for 120 seconds.
 
 ## Transfer Flows
 
@@ -64,7 +64,7 @@ sequenceDiagram
     Receiver->>Sender: 11. Send Encrypted ACK
 ```
 
-#### Serverless Mode (iroh with relays disabled)
+#### Serverless Modes (iroh with relays disabled)
 
 Serverless mode is for transfers without any third-party server. Both endpoints
 use `RelayMode::Disabled`, omit n0 DNS/pkarr publishing and lookup, and retain
@@ -75,8 +75,9 @@ The receiver constructs its target from those embedded addresses, while mDNS
 continues as a fallback. After connecting, both sides run SPAKE2 with the
 payload's secret; the derived key encrypts the application protocol.
 
-With `--pin`, no long payload is copied. The sender advertises an encrypted PIN
-rendezvous record through mDNS. The receiver selects a relayless, mDNS-only
+Serverless PIN mode (`--pin`) uses the same relayless transport, but no long
+payload is copied. The sender advertises an encrypted PIN rendezvous record
+through mDNS. The receiver selects a relayless, mDNS-only
 endpoint before doing the lookup. The one displayed PIN expires after 120
 seconds, at which point the sender exits rather than rotating it.
 
@@ -110,7 +111,7 @@ sequenceDiagram
 - **Failover**: Uses multiple relays for redundancy; monitors latency to select the best path.
 - **Connection**: "Hole punching" attempts to establish a direct UDP connection; falls back to relay if NATs are strict.
 - **Protocol**: ALPN `beam-transfer/3`.
-- **PIN Support**: No. PIN pairing is a separate LAN-only, relayless mode.
+- **PIN Support**: No. PIN pairing is a serverless, LAN-only mode.
 - **Encryption**: Always AES-256-GCM encrypted at the application layer, plus QUIC/TLS encryption.
 
 ### Serverless Mode (`beam-rs send --serverless`)
@@ -118,11 +119,11 @@ sequenceDiagram
 - **Transport**: QUIC / TLS 1.3 (same as iroh mode)
 - **Discovery**: Direct addresses embedded in the serverless payload, with mDNS as a fallback; relays and n0 DNS/pkarr are disabled.
 - **Key Exchange**: The pasted payload carries a fresh 256-bit session secret; SPAKE2 derives the AES key in-band.
-- **PIN Support**: No. `--pin` is a separate serverless pairing mode.
+- **PIN Support**: No. `--pin` is the separate serverless PIN mode below.
 - **Encryption**: AES-256-GCM with a SPAKE2-derived key, plus QUIC/TLS encryption.
 - **Reachability**: Primarily intended for the same LAN. Embedded public/port-mapped addresses can permit a direct WAN path, but NAT/firewalls commonly prevent it. Incompatible with `--relay-url`.
 
-### PIN Mode (`beam-rs send --pin`)
+### Serverless PIN Mode (`beam-rs send --pin`)
 
 - **Transport**: QUIC / TLS 1.3 with relays disabled.
 - **Discovery**: An encrypted ephemeral node-ID record advertised over mDNS only; n0 DNS/pkarr are disabled.
@@ -145,9 +146,9 @@ Default Iroh mode uses two encryption layers for defense in depth:
 - AES-256-GCM encryption for all data: headers, chunks, and control signals
 - 256-bit one-time secret generated per transfer and embedded in the iroh beam code; SPAKE2 derives the content key after binding the receiver's claimed node ID to its authenticated QUIC identity
 
-### PIN-based Key Exchange (PIN Mode)
+### PIN-based Key Exchange (Serverless PIN Mode)
 
-PIN mode is available through `beam-rs send --pin` and is always serverless and
+Serverless PIN mode is available through `beam-rs send --pin` and is always
 LAN-only.
 
 - **Format**: Ten uppercase characters grouped `XXXXX-XXXXX`: nine random Crockford-base32 characters (~45 bits) and a position-weighted check character. Input is case-insensitive and maps common lookalikes.
@@ -169,8 +170,8 @@ All beam codes include a creation timestamp and are validated against a TTL to p
 
 **Validation Points:**
 1. **Beam Codes** (default iroh): Validated in `parse_code()` before connection.
-2. **PIN Mode**: The rendezvous and listening window is 120 seconds; there is no embedded beam token.
-3. **Serverless Codes**: Valid only while their ephemeral sender process remains alive. They use a separate strict versioned payload rather than the beam-token format.
+2. **Serverless Codes**: Valid only while their ephemeral sender process remains alive. They use a separate strict versioned payload rather than the beam-token format.
+3. **Serverless PIN Mode**: The rendezvous and listening window is 120 seconds; there is no embedded beam token.
 
 **Error Messages:**
 - Expired codes: "Token expired: code is X minutes old (max 60 minutes). Please request a new code from the sender."
@@ -180,7 +181,7 @@ All beam codes include a creation timestamp and are validated against a TTL to p
 
 ### Encrypted Message Format (Stream-based transports)
 
-All encrypted messages (used by Iroh and iroh `--serverless` modes) follow this format:
+All encrypted messages (used by the default iroh and both serverless modes) follow this format:
 
 ```
 [length: 4 bytes BE][encrypted_payload]

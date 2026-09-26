@@ -50,7 +50,7 @@ refresh.
 ## 3. Cannot Copy-Paste (Cross-device / Remote Terminal)
 **Scenario**: You are sending a file to another device or remote console where copying and pasting a long code is inconvenient.
 
-**Solution A**: **PIN Mode** (Recommended when copy-paste is hard)
+**Solution A**: **Serverless PIN Mode** (Recommended when copy-paste is hard)
 - **Why**: Uses a short ten-character PIN instead of a long code. The receiver finds the encrypted node-ID record over mDNS, then the peers derive the content-encryption key with SPAKE2. Both devices must share a LAN.
 - **Command**:
   ```bash

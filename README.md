@@ -13,7 +13,7 @@ For folders, use [pTransfer](https://github.com/andrewtheguy/ptransfer).
 - **Resumable file transfers** - Interrupted downloads resume from the receiver's partial state
 - **Single-file transfers** - Send one regular file per session
 - **Serverless transfers** - direct transfers with no third-party server; a copy/paste code embeds the node ID, a fresh session secret, and discovered direct addresses, with mDNS as a fallback (`beam-rs send --serverless`)
-- **LAN-only PIN pairing** - `--pin` discovers the sender over mDNS without a relay, internet-backed DNS publisher, or copied long code
+- **Serverless PIN pairing** - LAN-only; `--pin` discovers the sender over mDNS without a relay, internet-backed DNS publisher, or copied long code
 - **NAT traversal** - Automatic relay fallback for iroh
 - **Cross-platform** - Standalone release binaries for Linux x86_64/aarch64, macOS Apple Silicon, and Windows x86_64 (stable releases)
 
@@ -81,25 +81,7 @@ beam-rs send /path/to/file
     ```
 - Multiple `--relay-url` flags are supported for failover.
 
-### 2. PIN Mode - `send --pin`
-
-*Short-lived, serverless PIN discovery over the local network, with SPAKE2 authentication.*
-
-```bash
-# Sender
-beam-rs send --pin /path/to/file
-
-# Receiver (enter the displayed PIN)
-beam-rs receive
-```
-
-The sender advertises only its encrypted ephemeral node ID, never a beam code or
-content key. Discovery uses mDNS, and both iroh relays and internet-backed DNS
-are disabled. The displayed ten-character PIN is valid for one 120-second
-window. If no receiver starts connecting, the sender exits instead of refreshing
-it. Both devices must be on the same local network.
-
-### 3. Serverless Mode - `send --serverless`
+### 2. Serverless Mode - `send --serverless`
 
 *No third-party server, primarily for same-network/LAN transfers using a copied code.*
 
@@ -121,11 +103,27 @@ beam-rs receive
 
 ```
 
-For the same serverless transport with a short mDNS PIN instead of a copied
-code, use `beam-rs send --pin` as described above.
+### 3. Serverless PIN Mode - `send --pin`
+
+*The same serverless transport, with a short-lived PIN discovered over the local network instead of a copied code, and SPAKE2 authentication.*
+
+```bash
+# Sender
+beam-rs send --pin /path/to/file
+
+# Receiver (enter the displayed PIN)
+beam-rs receive
+```
+
+The sender advertises only its encrypted ephemeral node ID, never a beam code or
+content key. Discovery uses mDNS, and both iroh relays and internet-backed DNS
+are disabled. The displayed ten-character PIN is valid for one 120-second
+window. If no receiver starts connecting, the sender exits instead of refreshing
+it. Both devices must be on the same local network.
+
 `send` takes at most one mode flag (`--serverless` or `--pin`); with none it uses
 the default iroh mode. `--relay-url` applies only to the default mode, because
-the other two disable relays.
+both serverless modes disable relays.
 
 ### Receiving
 
@@ -167,19 +165,20 @@ For protocol details and wire formats, see [ARCHITECTURE.md](docs/ARCHITECTURE.m
 All modes provide end-to-end encryption.
 - **Default iroh**: The beam code carries a one-time secret and sender address. SPAKE2 proves secret possession, binds it to the receiver's authenticated iroh node ID, and derives the content-encryption key before metadata is sent.
 - **Serverless**: The copied beam code carries a 256-bit session secret and direct address hints; SPAKE2 derives the content-encryption key.
-- **PIN mode (`send --pin`)**: mDNS carries only an encrypted ephemeral node ID. After connection, SPAKE2 proves PIN possession and derives the content-encryption key. Iroh relays and internet-backed DNS are disabled.
+- **Serverless PIN (`send --pin`)**: mDNS carries only an encrypted ephemeral node ID. After connection, SPAKE2 proves PIN possession and derives the content-encryption key. Iroh relays and internet-backed DNS are disabled.
 
 | Mode | Type | Key Exchange | Transport Encryption | Content Encryption |
 |------|------|--------------|---------------------|-------------------|
 | iroh | Internet | Beam Code secret + SPAKE2 node-ID authorization | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
-| iroh (`--pin`) | Direct (LAN) | mDNS node-ID rendezvous + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
 | iroh (`--serverless`) | Direct (LAN/public) | Copied 256-bit secret + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
+| iroh (`--pin`) | Direct (LAN) | mDNS node-ID rendezvous + SPAKE2 | QUIC/TLS 1.3 | AES-256-GCM with SPAKE2-derived key |
 
-All modes use dual-layer encryption (transport + content). `--serverless` is the
-same iroh transport with relays disabled, so it keeps QUIC/TLS 1.3 on the wire.
+All modes use dual-layer encryption (transport + content). Both serverless modes
+(`--serverless` and `--pin`) use the same iroh transport with relays disabled, so
+they keep QUIC/TLS 1.3 on the wire.
 
 Iroh relay servers never see decrypted content or encryption keys.
-Serverless and PIN modes contact neither kind of server.
+Both serverless modes contact neither kind of server.
 
 For detailed security model, see [ARCHITECTURE.md](docs/ARCHITECTURE.md#security-model).
 
