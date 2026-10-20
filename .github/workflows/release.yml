@@ -13,7 +13,7 @@ jobs:
       release_tag: ${{ steps.version.outputs.new }}
       is_prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Determine version
         id: version
@@ -67,7 +67,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -79,7 +79,7 @@ jobs:
         run: mv target/${{ matrix.target }}/release/beam-rs target/release/beam-rs-${{ matrix.suffix }}
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.suffix }}
           path: target/release/beam-rs-${{ matrix.suffix }}
@@ -96,7 +96,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -108,7 +108,7 @@ jobs:
         run: mv target/${{ matrix.target }}/release/beam-rs target/release/beam-rs-${{ matrix.suffix }}
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.suffix }}
           path: target/release/beam-rs-${{ matrix.suffix }}
@@ -124,7 +124,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -136,7 +136,7 @@ jobs:
         run: move target\${{ env.TARGET }}\release\beam-rs.exe target\release\beam-rs-${{ env.SUFFIX }}.exe
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ env.SUFFIX }}
           path: target/release/beam-rs-${{ env.SUFFIX }}.exe
@@ -154,7 +154,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: artifacts
